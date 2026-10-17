@@ -259,3 +259,11 @@ def test_deviating_first_observation_is_a_step():
     gt = np.arange(1000.)
     result = _gps_case(gt, 30010 + gt + (gt >= 1))
     assert result.method == "motion" and "step" in result.confidence["gps_rejected"]
+
+
+def test_slowly_wandering_gps_is_not_a_step():
+    gt = np.arange(600.)
+    noise = .045*np.sin(np.linspace(0, 6*np.pi, 600)) + np.random.default_rng(1).uniform(-.005, .005, 600)
+    result = _gps_case(gt, 30010 + gt + noise)
+    assert result.method == "gps"
+    assert abs(result.offset_seconds - 30010) <= result.uncertainty_seconds
