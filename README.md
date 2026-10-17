@@ -16,10 +16,8 @@ pip install "gps-video-sync[verify]"
 For a source installation, run
 `pip install .` or `pip install ".[verify]"` from the repository root.
 
-GoPro video input requires [ffprobe](https://ffmpeg.org/ffprobe.html) at runtime.
-Install it through your operating system's FFmpeg package and make sure that
-`ffprobe` is on `PATH`. The Python package does not install it. Core matching
-with existing telemetry or NPZ input does not require `ffprobe`.
+GoPro MP4 and LRV extraction uses only the package's Python dependencies.
+The native reader gets timing and file positions from MP4 sample tables.
 
 To create verification plots, install the `verify` extra. Frame extraction also
 requires `ffmpeg` on `PATH`.
@@ -83,8 +81,9 @@ python -m pytest
 The integration tests use [bundled fixtures](https://github.com/manuelseeger/gps-video-sync/tree/main/tests/fixtures).
 The fixtures contain flight coordinates, times, and media. Release archives
 exclude tests and fixtures. Run the full test suite from a repository checkout.
-They require `ffprobe`. Frame tests also require `ffmpeg` and Matplotlib.
-To run only unit tests, use `python -m pytest -m 'not integration'`.
+Extraction and alignment tests need no external programs. Optional parity tests
+use `ffprobe` and have the `ffprobe` marker. Frame tests require `ffmpeg` and
+Matplotlib. To run only unit tests, use `python -m pytest -m 'not integration'`.
 
 ## Releases
 

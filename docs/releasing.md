@@ -8,8 +8,8 @@
 - Version: `0.1.0`, in `pyproject.toml` and `src/gps_video_sync/__init__.py`.
 - Git tags use `major.minor.patch`, for example `0.1.0`, with no `v` prefix.
 - Runtime dependencies: NumPy and SciPy. The `verify` extra adds Matplotlib.
-- GoPro extraction needs the system `ffprobe` executable. Frame extraction also
-  needs `ffmpeg`. Python package installation does not install these tools.
+- GoPro extraction needs no external programs. Frame extraction needs the
+  system `ffmpeg` executable. Python package installation does not install it.
 - License: MIT. Each archive includes `LICENSE`.
 - Build backend: Hatchling 1.32.4. GitHub Actions are pinned to commit hashes.
 
@@ -58,8 +58,8 @@ uv run --python 3.10 --extra dev --extra verify pytest -q
 uv run --python 3.15 --extra dev --extra verify pytest -q
 ```
 
-The full suite needs the tracked `tests/fixtures` files, `ffprobe`, `ffmpeg`,
-and Matplotlib. Do not treat skipped integration tests as release validation.
+The full suite needs the tracked `tests/fixtures` files, `ffmpeg`, `ffprobe`
+(for the parity tests), and Matplotlib. Do not treat skipped integration tests as release validation.
 The real-flight fixtures contain coordinates, flight times, and media. They
 are for repository tests and are excluded from release archives.
 

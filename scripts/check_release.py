@@ -9,7 +9,7 @@ import zipfile
 
 MODULES = {
     "__init__.py", "__main__.py", "cli.py", "gopro.py", "gpmf.py",
-    "igc.py", "models.py", "plugins.py", "sync.py", "verify.py",
+    "igc.py", "models.py", "mp4.py", "plugins.py", "sync.py", "verify.py",
 }
 
 
