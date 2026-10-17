@@ -241,9 +241,13 @@ has a step at a gap.
 The uncertainty is 0.1 seconds at the center of the GPS observations, plus the
 possible rate error times the distance to the farther video end. The possible
 rate error is the difference between the used rate and the within-run rate,
-plus the within-run bound and three standard errors. Therefore a short GPS
-interval far from the video start does not give a GPS result, and a step at a
-gap that the runs cannot separate from a rate change increases the uncertainty.
+plus the within-run bound and three standard errors. The uncertainty also
+covers the clock of each run: at both video ends, the run's median offset at
+the within-run rate, plus 0.1 seconds, plus the within-run bound and three
+standard errors times the distance to the run's center. Therefore a short GPS
+interval far from the video start, short runs between gaps, or a step at a gap
+that the runs cannot separate from a rate change increase the uncertainty, and
+can prevent a GPS result.
 
 When GPS time is present but unusable, `confidence.gps_rejected` gives the
 reason. A motion result that is not accepted also states that reason in

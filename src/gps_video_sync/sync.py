@@ -78,8 +78,8 @@ def _within_run_rate(time, utc):
 
     A gap is longer than GPS_GAP_SECONDS and five median sample intervals.
     Each run has its own offset, so a step at a gap does not change the rate.
-    Returns the rate, its bound for noise within +-GPS_STEP_SECONDS/2, and
-    its standard error.
+    Returns the rate, its bound for noise within +-GPS_STEP_SECONDS/2, its
+    standard error, and the run index of each observation.
     """
     steps = np.diff(time)
     gap = max(GPS_GAP_SECONDS, 5*float(np.median(steps)))
@@ -89,13 +89,13 @@ def _within_run_rate(time, utc):
     centered_utc = utc-(np.bincount(run, utc)/counts)[run]
     weight = float(np.sum(centered_time**2))
     if weight <= 0:
-        return 1., np.inf, np.inf
+        return 1., np.inf, np.inf, run
     rate = float(np.sum(centered_time*centered_utc))/weight
     residual = centered_utc-rate*centered_time
     freedom = max(1, len(time)-len(counts)-1)
     stderr = float(np.sqrt(np.sum(residual**2)/freedom/weight))
     bound = GPS_STEP_SECONDS/2*float(np.sum(abs(centered_time)))/weight
-    return rate, bound, stderr
+    return rate, bound, stderr, run
 
 
 def _grid(time, values, grid, max_gap=None):
@@ -382,7 +382,7 @@ def synchronize(track: Track, telemetry: Telemetry) -> SyncResult:
             last = max(float(gt[-1]), float(telemetry.time[-1]))
             rate_error = abs(fit.slope-1)
             detected = bool(rate_error > 3*fit.stderr and rate_error*(last-first) > .5)
-            within, within_bound, within_stderr = _within_run_rate(gt, gu)
+            within, within_bound, within_stderr, runs = _within_run_rate(gt, gu)
             centered = gt-gt.mean()
             global_bound = GPS_STEP_SECONDS/2*float(np.sum(abs(centered))/np.sum(centered**2))
             rate_used = float(fit.slope) if detected else 1.
@@ -391,6 +391,15 @@ def synchronize(track: Track, telemetry: Telemetry) -> SyncResult:
             # rate within GPS runs bounds, extrapolated to the video ends.
             possible_rate_error = abs(rate_used-within)+within_bound+3*within_stderr
             reach = GPS_STEP_SECONDS+possible_rate_error*max(abs(first-gt.mean()), abs(last-gt.mean()))
+            # Each run's own clock, at the within-run rate, must also be covered
+            # at both video ends. This covers a step at a gap.
+            run_rate_error = within_bound+3*within_stderr
+            for index in np.unique(runs):
+                run_time, run_utc = gt[runs == index], gu[runs == index]
+                level = float(np.median(run_utc-within*run_time))
+                for end in (first, last):
+                    reach = max(reach, abs(offset+rate_used*end-level-within*end) + GPS_STEP_SECONDS
+                                + run_rate_error*abs(end-float(run_time.mean())))
             uncertainty = max(.5, scatter*3, reach)
             if abs(fit.slope-within) > within_bound+global_bound+3*np.hypot(within_stderr, fit.stderr):
                 gps_rejection = f"GPS UTC has a step of more than {GPS_STEP_SECONDS:g} s at a gap"

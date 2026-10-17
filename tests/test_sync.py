@@ -340,3 +340,14 @@ def test_step_at_gps_gap_is_rejected_or_covered():
     if result.method == "gps":
         for truth in (30010, 30010.3):
             assert abs(result.offset_seconds - truth) <= result.uncertainty_seconds
+
+
+def test_large_step_at_long_gps_gap_is_rejected_or_covered():
+    t = np.arange(200.)
+    t[100:] += 400
+    utc = 30010 + t + .049*np.cos(np.linspace(0, 10, 200))
+    utc[100:] -= 1
+    result = _gps_case(t, utc)
+    if result.method == "gps":
+        for truth in (30010, 30009):
+            assert abs(result.offset_seconds - truth) <= result.uncertainty_seconds
