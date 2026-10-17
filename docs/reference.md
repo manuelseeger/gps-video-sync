@@ -67,7 +67,7 @@ GPS9 UTC days and seconds, or GPS5 with GPSU timestamps, provide absolute time.
 GPS9 takes priority. Only 3D fixes are used. File creation dates and the STMP
 sensor clock are not UTC references.
 
-The default cache is `~/.cache/igc-video-sync`. Keys include ordered absolute
+The default cache is `~/.cache/gps-video-sync`. Keys include ordered absolute
 paths, file sizes, nanosecond modification times, sample rate, and extractor
 cache version. Writes are atomic. An unavailable cache does not stop extraction.
 Cache files can contain GPS coordinates and times.
@@ -93,7 +93,7 @@ half-open. A boundary selects the next chapter. A single video needs no chapter 
 
 ## CLI and telemetry formats
 
-`python -m igc_video_sync` and `igc-video-sync` expose the same commands.
+`python -m gps_video_sync` and `gps-video-sync` expose the same commands.
 Common options follow the command name.
 
 - `--source NAME` selects a video source. The default is `gopro`.

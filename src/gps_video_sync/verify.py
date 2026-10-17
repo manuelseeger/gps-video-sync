@@ -1,4 +1,3 @@
-"""Optional aligned-feature plots and chapter-aware frame extraction."""
 from pathlib import Path
 import subprocess
 
@@ -35,13 +34,12 @@ def _chapter_frame(telemetry, videos, seconds):
 
 
 def plot_verification(track, telemetry, result, output, frames=(), videos=()):
-    """Compare normalized matching features. Frames are separate sibling PNGs."""
     try:
         import matplotlib
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
     except ImportError as exc:
-        raise RuntimeError("Verification plots require: pip install 'igc-video-sync[verify]'") from exc
+        raise RuntimeError("Verification plots require: pip install 'gps-video-sync[verify]'") from exc
     if not isinstance(result, dict) or result.get("schema_version") != "1.0.0":
         raise ValueError("Expected a schema_version 1.0.0 sync result")
     offset = result.get("offset_seconds")
@@ -73,7 +71,6 @@ def plot_verification(track, telemetry, result, output, frames=(), videos=()):
                 a, b = normalized(track_features[key]), normalized(video_features[key])
                 mapped_time = time*rate+offset
                 overlap = np.isfinite(a) & (utc >= mapped_time[0]) & (utc <= mapped_time[-1])
-                # Signed yaw is mount dependent; show the matching sign.
                 if key == "yaw" and overlap.sum() > 2:
                     vb = np.interp(utc[overlap], mapped_time, b)
                     good = np.isfinite(vb)

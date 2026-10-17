@@ -1,4 +1,3 @@
-"""Synthetic GPMF/MP4 packet tests; no video fixtures are required."""
 from datetime import datetime, timezone
 import json
 from pathlib import Path
@@ -8,9 +7,9 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from igc_video_sync import gopro
-from igc_video_sync.gopro import GoProSource
-from igc_video_sync.gpmf import DTYPES, number, records, scaled, streams
+from gps_video_sync import gopro
+from gps_video_sync.gopro import GoProSource
+from gps_video_sync.gpmf import DTYPES, number, records, scaled, streams
 
 
 def record(key, typ, size, count, data):
@@ -143,7 +142,6 @@ def test_all_motion_channels_and_quaternion_signs(tmp_path, monkeypatch):
 def test_chapter_order_actual_duration_and_missing_channels(tmp_path, monkeypatch):
     first, m1 = video(tmp_path, "z.mp4", [packet(stream(numeric("ACCL", [[1, 2, 3]])))], duration=1.25)
     second, m2 = video(tmp_path, "a.mp4", [packet(stream(numeric("GYRO", [[4, 5, 6]])))], duration=.75)
-    # duration_ts/time_base is a valid alternative to duration.
     del m2["streams"][0]["duration"]
     m2["streams"][0].update(duration_ts=750, time_base="1/1000")
     calls = install_probe(monkeypatch, {first: m1, second: m2})
@@ -180,7 +178,6 @@ def test_gps9_primary_utc_and_fix_filter(tmp_path, monkeypatch):
     result = GoProSource().read([path], hz=10, cache_dir=tmp_path / "cache")
     np.testing.assert_allclose(result.gps_time, [0, 1])
     np.testing.assert_allclose(result.gps_utc - gopro.GPS_EPOCH - 9000 * 86400, [43200.123, 43201.123])
-    # A poor GPSF must also reject GPS9, with no fallback to GPS5.
     path2, meta2 = video(tmp_path, "bad.mp4", [packet(gps9(rows, gpsf=0), gps5())])
     install_probe(monkeypatch, {path2: meta2})
     rejected = GoProSource().read([path2], cache_dir=tmp_path / "cache")
@@ -269,7 +266,7 @@ def test_cache_roundtrip_all_fields_and_default_location(tmp_path, monkeypatch):
     result = source.read([path], hz=4)
     saved = source.read([path], hz=4)
     assert calls == [path]
-    assert list((tmp_path / ".cache" / "igc-video-sync").glob("gopro-*.npz"))
+    assert list((tmp_path / ".cache" / "gps-video-sync").glob("gopro-*.npz"))
     assert saved.chapters == result.chapters
     np.testing.assert_array_equal(saved.time, result.time)
     np.testing.assert_array_equal(saved.gps_time, result.gps_time)
@@ -277,7 +274,6 @@ def test_cache_roundtrip_all_fields_and_default_location(tmp_path, monkeypatch):
     np.testing.assert_array_equal(saved.channels["CORI"], result.channels["CORI"])
     source.read([path], hz=5)
     assert len(calls) == 2
-    # Size and nanosecond mtime are independent cache inputs.
     with path.open("ab") as handle:
         handle.write(b"x")
     source.read([path], hz=4)

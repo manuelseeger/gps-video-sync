@@ -1,4 +1,3 @@
-"""Public data contracts. Track time is UTC seconds from date's midnight."""
 from __future__ import annotations
 from dataclasses import dataclass, field, asdict
 from datetime import date, datetime, timezone, timedelta
@@ -19,12 +18,10 @@ class Telemetry:
     time: np.ndarray
     channels: dict[str, np.ndarray]
     chapters: list[dict[str, Any]] = field(default_factory=list)
-    # UTC Unix seconds, measured on the video timeline. GPSU/GPS9 only.
     gps_time: np.ndarray = field(default_factory=lambda: np.empty(0))
     gps_utc: np.ndarray = field(default_factory=lambda: np.empty(0))
 
     def slice(self, start: float, end: float) -> Telemetry:
-        """Crop and rebase video time. Offset returned by sync refers to start."""
         mask = (self.time >= start) & (self.time < end)
         gps = (self.gps_time >= start) & (self.gps_time < end)
         return Telemetry(self.time[mask] - start,
@@ -46,7 +43,6 @@ class SyncResult:
 
     @property
     def video_start_utc(self) -> str | None:
-        """ISO UTC start, or None if date/alignment is not established."""
         if self.date is None or self.offset_seconds is None:
             return None
         return (datetime.combine(self.date, datetime.min.time(), timezone.utc)

@@ -1,7 +1,7 @@
 from datetime import date
 import numpy as np
 import pytest
-from igc_video_sync.igc import IGCReader
+from gps_video_sync.igc import IGCReader
 
 
 def fix(clock, validity="A", pressure=500, gps=700):

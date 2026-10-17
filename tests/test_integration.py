@@ -1,4 +1,3 @@
-"""Real GoPro extraction and alignment with bundled, compact media."""
 import json
 from pathlib import Path
 import shutil
@@ -6,12 +5,11 @@ import shutil
 import numpy as np
 import pytest
 
-from igc_video_sync import read_track, read_video, synchronize
-from igc_video_sync.cli import main
+from gps_video_sync import read_track, read_video, synchronize
+from gps_video_sync.cli import main
 
 pytestmark = pytest.mark.integration
 FIXTURES = Path(__file__).parent / "fixtures"
-# The excerpt starts 1814.112 seconds into a recording aligned at 34346 seconds.
 EXPECTED_OFFSET = 36160.112
 
 
@@ -84,7 +82,7 @@ def test_verification_frames(flight, tmp_path):
     pytest.importorskip("matplotlib")
     if not shutil.which("ffmpeg"):
         pytest.skip("Frame extraction requires ffmpeg")
-    from igc_video_sync.verify import plot_verification
+    from gps_video_sync.verify import plot_verification
 
     track, telemetry, paths = flight
     result = synchronize(track, telemetry)

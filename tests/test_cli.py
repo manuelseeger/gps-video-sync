@@ -1,4 +1,3 @@
-"""Standalone CLI contract tests: no GoPro, matcher, or external tools required."""
 import json
 import os
 from pathlib import Path
@@ -8,9 +7,9 @@ import sys
 import numpy as np
 import pytest
 
-from igc_video_sync import cli
-from igc_video_sync.models import SyncResult, Telemetry, Track
-from igc_video_sync.verify import _chapter_frame
+from gps_video_sync import cli
+from gps_video_sync.models import SyncResult, Telemetry, Track
+from gps_video_sync.verify import _chapter_frame
 
 
 @pytest.fixture
@@ -84,7 +83,7 @@ def test_invalid_canonical_shape_is_clean(tmp_path, capsys):
 
 def test_module_subprocess(sample):
     env = dict(os.environ, PYTHONPATH=str(Path(__file__).resolve().parents[1] / "src"))
-    proc = subprocess.run([sys.executable, "-m", "igc_video_sync", "info", str(sample),
+    proc = subprocess.run([sys.executable, "-m", "gps_video_sync", "info", str(sample),
                            "--source", "npz"], env=env, capture_output=True, text=True)
     assert proc.returncode == 0, proc.stderr
     assert json.loads(proc.stdout)["channels"]["gyro"] == [8, 3]
@@ -103,7 +102,7 @@ def test_input_errors(args, capsys):
 
 
 def test_syntax_error_exit_one():
-    proc = subprocess.run([sys.executable, "-m", "igc_video_sync", "sync", "video.mp4"],
+    proc = subprocess.run([sys.executable, "-m", "gps_video_sync", "sync", "video.mp4"],
                           capture_output=True, text=True)
     assert proc.returncode == 1
     assert "--track" in proc.stderr
@@ -149,7 +148,7 @@ def test_plot_from_result(sample, tmp_path, monkeypatch):
 
 def test_frame_uses_chapter_local_time(tmp_path, monkeypatch):
     pytest.importorskip("matplotlib")
-    import igc_video_sync.verify as verify
+    import gps_video_sync.verify as verify
     telemetry = Telemetry(np.arange(20), {}, chapters=[
         {"path": "a.mp4", "start": 0, "end": 10},
         {"path": "b.mp4", "start": 10, "end": 20}])
@@ -176,14 +175,14 @@ def test_sync_stdout_and_real_gps_matcher(tmp_path):
     gt = np.arange(10.)
     epoch = datetime(2026, 1, 1, tzinfo=timezone.utc).timestamp()
     np.savez(path, time=gt, gps_time=gt, gps_utc=epoch+30010+gt)
-    proc = subprocess.run([sys.executable, "-m", "igc_video_sync", "sync", str(path),
+    proc = subprocess.run([sys.executable, "-m", "gps_video_sync", "sync", str(path),
                            "--source", "npz", "--track", str(track)], capture_output=True, text=True)
     assert proc.returncode == 0, proc.stderr
     result = json.loads(proc.stdout)
     assert result["method"] == "gps"
     assert result["offset_seconds"] == 30010
     np.savez(path, time=gt, GYRO=np.zeros((10, 3)))
-    ambiguous = subprocess.run([sys.executable, "-m", "igc_video_sync", "sync", str(path),
+    ambiguous = subprocess.run([sys.executable, "-m", "gps_video_sync", "sync", str(path),
                                 "--source", "npz", "--track", str(track)], capture_output=True, text=True)
     assert ambiguous.returncode == 2, ambiguous.stderr
     assert json.loads(ambiguous.stdout)["offset_seconds"] is None
@@ -191,7 +190,7 @@ def test_sync_stdout_and_real_gps_matcher(tmp_path):
 
 def test_missing_ffmpeg_is_clean_error(sample, tmp_path, monkeypatch, capsys):
     fake_matcher(monkeypatch)
-    import igc_video_sync.verify as verify
+    import gps_video_sync.verify as verify
     monkeypatch.setattr(verify, "plot_verification", lambda *a: (_ for _ in ()).throw(
         FileNotFoundError("ffmpeg not found")))
     assert cli.main(["verify", str(sample), "--source", "npz", "--track", "unused",

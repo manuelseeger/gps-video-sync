@@ -1,0 +1,83 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.10', '3.11', '3.12', '3.13', '3.14', '3.15']
+        include:
+          - python: '3.10'
+            resolution: lowest-direct
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+      - name: Install FFmpeg
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - name: Run unit and real-media integration tests
+        env:
+          MPLBACKEND: Agg
+        run: |
+          test -s tests/fixtures/chapter-01.mp4
+          test -s tests/fixtures/chapter-02.mp4
+          test -s tests/fixtures/flight.igc
+          ffprobe -version
+          ffmpeg -version
+          uv run --python '${{ matrix.python }}' --resolution '${{ matrix.resolution || 'highest' }}' --extra dev --extra verify pytest -q
+
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python: ['3.10', '3.15']
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install FFmpeg
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - name: Build and check distributions
+        run: |
+          uv build
+          uvx twine check --strict dist/*
+          python scripts/check_release.py dist
+      - name: Rebuild wheel from source archive
+        run: |
+          mkdir "$RUNNER_TEMP/source"
+          tar -xzf dist/*.tar.gz -C "$RUNNER_TEMP/source"
+          uv build --wheel "$RUNNER_TEMP/source/"* --out-dir "$RUNNER_TEMP/rebuilt"
+      - name: Test installed wheels outside the checkout
+        env:
+          MPLBACKEND: Agg
+        run: |
+          uv venv --python '${{ matrix.python }}' "$RUNNER_TEMP/smoke"
+          uv pip install --python "$RUNNER_TEMP/smoke/bin/python" dist/*.whl
+          export PATH="$RUNNER_TEMP/smoke/bin:$PATH"
+          cd "$RUNNER_TEMP"
+          python -I "$GITHUB_WORKSPACE/scripts/smoke_installed.py"
+          uv pip install --python "$RUNNER_TEMP/smoke/bin/python" --reinstall "$RUNNER_TEMP/rebuilt/"*.whl
+          python -I "$GITHUB_WORKSPACE/scripts/smoke_installed.py"
+          wheel=("$RUNNER_TEMP/rebuilt/"*.whl)
+          uv pip install --python "$RUNNER_TEMP/smoke/bin/python" "${wheel[0]}[verify]"
+          python -I "$GITHUB_WORKSPACE/scripts/smoke_installed.py" --verify --fixtures "$GITHUB_WORKSPACE/tests/fixtures"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: matrix.python == '3.15'
+        with:
+          name: distributions
+          path: dist/*
+          if-no-files-found: error

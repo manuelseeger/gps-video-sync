@@ -2,8 +2,8 @@ from datetime import date
 import numpy as np
 import pytest
 from scipy.ndimage import gaussian_filter1d as gf
-from igc_video_sync.models import Track, Telemetry
-from igc_video_sync.sync import correlation_curve, match_features, estimate_drift, synchronize, build_features, _grid
+from gps_video_sync.models import Track, Telemetry
+from gps_video_sync.sync import correlation_curve, match_features, estimate_drift, synchronize, build_features, _grid
 
 
 def signals(n=5000):
@@ -97,7 +97,7 @@ def test_gps_primary_and_date():
 
 
 def test_result_midnight_timebase():
-    from igc_video_sync import SyncResult
+    from gps_video_sync import SyncResult
     result = SyncResult("ok", 86410., date=date(2026, 1, 1))
     assert result.video_start_utc == "2026-01-02T00:00:10+00:00"
     obj = result.to_dict()
@@ -122,7 +122,6 @@ def test_gps_drift_uses_fitted_residual(rate):
     assert result.offset_seconds == pytest.approx(30010, abs=.1)
     assert result.drift["clock_rate"] == pytest.approx(rate, abs=1e-8)
     assert result.uncertainty_seconds <= 1
-    # Sparse bad timestamps must not defeat the real clock trend.
     telemetry.gps_utc[::20] += 100
     result = synchronize(track, telemetry)
     assert result.method == "gps"

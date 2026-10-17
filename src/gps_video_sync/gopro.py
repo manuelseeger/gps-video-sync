@@ -1,8 +1,3 @@
-"""GoPro motion and GPS UTC on the concatenated video timeline.
-
-ffprobe runs once per chapter. GPMF packets are read directly at their file
-positions. Motion retains native camera axes; GPS times are Unix UTC seconds.
-"""
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -78,7 +73,6 @@ def _video_timing(meta: dict) -> tuple[float, float]:
         except (ValueError, TypeError, ZeroDivisionError):
             pass
     if duration is None or duration <= 0 or not math.isfinite(duration):
-        # Use video packets, not the rounded metadata stream length.
         ends = [_pts(p) + (_float(p.get("duration_time")) or 0.0) for p in packets]
         duration = max(ends, default=start) - start
         if duration <= 0:
@@ -119,7 +113,6 @@ def _gps(fields: dict, times: np.ndarray, key: str) -> tuple[np.ndarray, np.ndar
             return np.empty(0), np.empty(0)
         utc = epoch + (times - times[0])
         good = np.ones(len(values), dtype=bool)
-    # GPSF, when present, must also report a 3D fix. GPS9 carries its own fix.
     if "GPSF" in fields:
         fix = number(fields["GPSF"]).ravel()
         if len(fix) not in (1, len(values)):
@@ -188,7 +181,6 @@ def _chapter(path: Path, base: float) -> tuple[dict, dict, list, list]:
                     mask = (gt >= base) & (gt < base + duration)
                     if mask.any():
                         target.append((gt[mask], utc[mask]))
-            # Do not replace rejected GPS9 fixes with a second GPS5 observation.
             if has_gps9:
                 gps9.extend(packet_gps9)
             else:
@@ -264,7 +256,6 @@ def _save_cache(path: Path, result: Telemetry) -> None:
                                 gps_time=result.gps_time, gps_utc=result.gps_utc, **result.channels)
         os.replace(temporary, path)
     except OSError:
-        # A read-only cache must not make extraction fail.
         pass
     finally:
         if temporary is not None:
@@ -275,12 +266,6 @@ def _save_cache(path: Path, result: Telemetry) -> None:
 
 
 class GoProSource:
-    """Read ordered MP4 chapters; absent motion channels are omitted.
-
-    Channels have shape (samples, 3), or (samples, 4) for native quaternions.
-    A channel absent in one chapter has NaN rows in that chapter. GPS arrays
-    retain valid native GPS fixes, independent of the motion sampling rate.
-    """
 
     def read(self, paths: Sequence[str | Path], *, hz: float = 10,
              cache_dir: str | Path | None = None) -> Telemetry:
@@ -290,7 +275,7 @@ class GoProSource:
         if isinstance(paths, (str, Path)) or not paths:
             raise ValueError("Supply a nonempty sequence of chapter paths")
         files = [Path(p).expanduser().resolve() for p in paths]
-        directory = Path(cache_dir).expanduser() if cache_dir is not None else Path.home() / ".cache" / "igc-video-sync"
+        directory = Path(cache_dir).expanduser() if cache_dir is not None else Path.home() / ".cache" / "gps-video-sync"
         cache = _cache_path(files, hz, directory)
         saved = _load_cache(cache)
         if saved is not None:
@@ -314,7 +299,6 @@ class GoProSource:
                 if key not in channels:
                     channels[key] = np.full((len(grid), values.shape[1]), np.nan)
                 channels[key][mask] = values
-        # Keep quaternion signs continuous across chapter boundaries, too.
         for key in QUATERNIONS:
             if key in channels:
                 mask = np.isfinite(channels[key]).all(axis=1)

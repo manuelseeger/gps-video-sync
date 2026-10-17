@@ -1,4 +1,3 @@
-"""Action camera to GPS track synchronization."""
 from .models import Track, Telemetry, SyncResult
 from .plugins import (TrackReader, VideoSource, register_track, register_video,
                       read_track, read_video)

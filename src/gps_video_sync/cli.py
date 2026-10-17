@@ -1,4 +1,3 @@
-"""Command line interface and a portable, pickle-free telemetry interchange format."""
 from __future__ import annotations
 
 import argparse
@@ -28,7 +27,6 @@ def write_json(path, value):
 
 
 def read_npz(path):
-    """Read one exported NPZ without loading Python pickle objects."""
     with np.load(path, allow_pickle=False) as data:
         time = np.asarray(data["time"], dtype=float)
         if time.ndim != 1 or not len(time) or not np.all(np.isfinite(time)):
