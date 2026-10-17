@@ -21,7 +21,7 @@ igc-video-sync = "igc_video_sync.cli:main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-markers = ["integration: uses external local video fixtures"]
+markers = ["integration: uses bundled GoPro media and ffprobe"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/igc_video_sync"]

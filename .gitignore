@@ -11,3 +11,4 @@ uv.lock
 *.LRV
 *.MP4
 *.mp4
+!tests/fixtures/*.mp4

@@ -1,93 +1,98 @@
-"""Real media is external and read-only. No fixture data enters the repository."""
+"""Real GoPro extraction and alignment with bundled, compact media."""
 import json
-import os
 from pathlib import Path
 import shutil
-import subprocess
-import warnings
+
+import numpy as np
 import pytest
+
 from igc_video_sync import read_track, read_video, synchronize
+from igc_video_sync.cli import main
 
 pytestmark = pytest.mark.integration
+FIXTURES = Path(__file__).parent / "fixtures"
+# The excerpt starts 1814.112 seconds into a recording aligned at 34346 seconds.
+EXPECTED_OFFSET = 36160.112
 
 
 @pytest.fixture(scope="module")
-def flight():
-    root = Path(os.environ.get("IGC_VIDEO_SYNC_FIXTURES", "~/dev/fliew/fixtures")).expanduser()
-    tracks = sorted(root.glob("*.igc"))
-    if not tracks or not shutil.which("ffprobe"):
-        pytest.skip("External IGC/video fixtures or ffprobe absent")
-    candidates = sorted(root.glob("GL0?0351.LRV"))
-    valid = []
-    for path in candidates:
-        # A transfer can leave a file without a complete MP4 index. Never use it.
-        try:
-            probe = subprocess.run(["ffprobe", "-v", "error", "-show_streams", "-show_packets",
-                                    "-select_streams", "v:0", "-show_entries", "packet=pos,size:stream=duration",
-                                    "-of", "json", str(path)], capture_output=True, check=True, timeout=60)
-            meta = json.loads(probe.stdout)
-            packets = meta.get("packets", [])
-            if not packets or any(int(p.get("pos", 0))+int(p.get("size", 0)) > path.stat().st_size for p in packets):
-                raise ValueError("truncated video samples")
-            if probe.stderr:
-                raise ValueError(probe.stderr.decode(errors="replace"))
-        except (subprocess.SubprocessError, ValueError):
-            warnings.warn(f"Ignoring incomplete fixture {path.name}")
-            continue
-        valid.append(path)
-    if len(valid) < 2 or valid[0].name != "GL010351.LRV" or valid[1].name != "GL020351.LRV":
-        pytest.skip("Need complete first two chapters")
-    return read_track(tracks[0]), read_video(valid), valid
+def flight(tmp_path_factory):
+    if not shutil.which("ffprobe"):
+        pytest.skip("GoPro extraction requires ffprobe")
+    paths = [FIXTURES / "chapter-01.mp4", FIXTURES / "chapter-02.mp4"]
+    cache = tmp_path_factory.mktemp("telemetry-cache")
+    return read_track(FIXTURES / "flight.igc"), read_video(paths, cache_dir=cache), paths
 
 
-def test_full_flight(flight):
+def test_extraction(flight):
+    _, telemetry, paths = flight
+    assert set(telemetry.channels) == {"GYRO", "ACCL", "GRAV", "CORI", "IORI"}
+    assert len(telemetry.time) == pytest.approx(6000, abs=2)
+    assert np.all(np.diff(telemetry.time) > 0)
+    for channel in telemetry.channels.values():
+        assert channel.shape[0] == len(telemetry.time)
+        assert np.isfinite(channel).mean() > 0.99
+    assert len(telemetry.gps_time) == 0
+    assert len(telemetry.chapters) == len(paths)
+    assert telemetry.chapters[1]["start"] == pytest.approx(telemetry.chapters[0]["duration"])
+    assert sum(c["duration"] for c in telemetry.chapters) == pytest.approx(600, abs=0.1)
+
+
+def test_alignment(flight):
     track, telemetry, paths = flight
     result = synchronize(track, telemetry)
-    print("FULL", json.dumps(result.to_dict()))
     assert result.status == "ok"
-    assert result.offset_seconds == pytest.approx(34346, abs=2)
-    assert not result.drift["detected"]
+    assert result.offset_seconds == pytest.approx(EXPECTED_OFFSET, abs=2)
+    assert not result.drift.get("detected", False)
     assert len(result.chapters) == len(paths)
-    assert result.chapters[1]["start"] == pytest.approx(result.chapters[0]["duration"])
 
 
-def test_first_two_chapters(flight):
-    track, _, paths = flight
-    result = synchronize(track, read_video(paths[:2]))
-    print("TWO CHAPTERS", result.offset_seconds, result.confidence)
+@pytest.mark.parametrize("chapter", [0, 1])
+def test_individual_chapters(flight, tmp_path, chapter):
+    track, telemetry, paths = flight
+    result = synchronize(track, read_video([paths[chapter]], cache_dir=tmp_path))
     assert result.status == "ok"
-    assert result.offset_seconds == pytest.approx(34346, abs=2)
-    assert not result.drift["detected"]
+    expected = EXPECTED_OFFSET + telemetry.chapters[chapter]["start"]
+    assert result.offset_seconds == pytest.approx(expected, abs=2)
 
 
-@pytest.mark.parametrize("duration", [600, 180, 30])
-def test_crop_sweep(flight, duration):
+@pytest.mark.parametrize("start,duration,status", [
+    (0, 180, "ok"), (120, 180, "ok"), (240, 180, "ambiguous"), (300, 180, "ok"),
+    (0, 30, "ambiguous"), (300, 30, "ambiguous"),
+])
+def test_crops(flight, start, duration, status):
     track, telemetry, _ = flight
-    accepted, declined, errors = 0, 0, []
-    for start in range(300, 3901, 300):
-        if start+duration > telemetry.time[-1]:
-            continue
-        result = synchronize(track, telemetry.slice(start, start+duration))
-        assert result.status in {"ok", "ambiguous"}
-        if result.status == "ok":
-            accepted += 1
-            error = result.offset_seconds-34346-start
-            errors.append(abs(error))
-            assert abs(error) <= 2
-        else:
-            declined += 1
-            assert result.offset_seconds is None
-    print("SWEEP", duration, "accepted", accepted, "declined", declined, "max_error", max(errors, default=None))
-
-
-@pytest.mark.parametrize("start,duration", [(1200, 600), (1800, 180), (1800, 30),
-                                                (2400, 600), (2400, 180), (2400, 30)])
-def test_middle_clips(flight, start, duration):
-    track, telemetry, _ = flight
-    result = synchronize(track, telemetry.slice(start, start+duration))
-    print("CLIP", start, duration, json.dumps(result.to_dict()))
-    assert result.status in {"ok", "ambiguous"}
-    if result.status == "ok":
-        assert result.offset_seconds == pytest.approx(34346+start, abs=2)
-    else:
+    result = synchronize(track, telemetry.slice(start, start + duration))
+    assert result.status == status
+    if status == "ambiguous":
         assert result.offset_seconds is None
+    else:
+        assert result.offset_seconds == pytest.approx(EXPECTED_OFFSET + start, abs=2)
+
+
+def test_cli_sync(flight, tmp_path):
+    _, _, paths = flight
+    output = tmp_path / "sync.json"
+    assert main(["sync", *map(str, paths), "--track", str(FIXTURES / "flight.igc"),
+                 "--cache-dir", str(tmp_path / "cache"), "--json", str(output)]) == 0
+    result = json.loads(output.read_text())
+    assert result["status"] == "ok"
+    assert result["offset_seconds"] == pytest.approx(EXPECTED_OFFSET, abs=2)
+
+
+def test_verification_frames(flight, tmp_path):
+    pytest.importorskip("matplotlib")
+    if not shutil.which("ffmpeg"):
+        pytest.skip("Frame extraction requires ffmpeg")
+    from igc_video_sync.verify import plot_verification
+
+    track, telemetry, paths = flight
+    result = synchronize(track, telemetry)
+    output = tmp_path / "alignment.png"
+    boundary = telemetry.chapters[1]["start"]
+    plot_verification(track, telemetry, result.to_dict(), output,
+                      frames=[boundary - 1, boundary + 1], videos=paths)
+    assert output.stat().st_size > 0
+    frames = list(tmp_path.glob("alignment-frame-*.png"))
+    assert len(frames) == 2
+    assert all(path.stat().st_size > 0 for path in frames)
