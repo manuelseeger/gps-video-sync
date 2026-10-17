@@ -42,6 +42,9 @@ gps-video-sync verify GOPR0001.MP4 GP010001.MP4 --track flight.igc \
 All video times use the concatenated chapter timeline. Run
 `gps-video-sync COMMAND --help` for command options.
 
+Results, `info` output, telemetry exports, and the cache contain absolute
+chapter paths. Remove the `chapters` data before you share these files.
+
 Exit codes are `0` for success, `2` for ambiguous alignment, and `1` for input or
 external-tool errors. An ambiguous result has no usable offset.
 
@@ -63,7 +66,8 @@ The result maps video seconds to UTC seconds from the track date's midnight:
 utc_seconds = video_seconds * clockRate + offset_seconds
 ```
 
-Motion matching needs at least 90 seconds of usable overlap. Repeated turns,
+Motion matching needs at least 90 seconds of usable overlap, and at least 65% of
+the shorter feature sequence must overlap. Repeated turns,
 data gaps, or low motion can produce ambiguous or false matches. Check the plot
 and distinctive events before you use an alignment. Short clips cannot establish
 clock stability.

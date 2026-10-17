@@ -1,5 +1,6 @@
 from fractions import Fraction
 import json
+import re
 from pathlib import Path
 import shutil
 import subprocess
@@ -174,8 +175,9 @@ def test_verification_frames(flight, tmp_path):
     output = tmp_path / "alignment.png"
     boundary = telemetry.chapters[1]["start"]
     plot_verification(track, telemetry, result.to_dict(), output,
-                      frames=[boundary - 1, boundary + 1], videos=paths)
+                      frames=[boundary - 1, boundary + 1, 0.00001, boundary + 1e-7], videos=paths)
     assert output.stat().st_size > 0
-    frames = list(tmp_path.glob("alignment-frame-*.png"))
-    assert len(frames) == 2
-    assert all(path.stat().st_size > 0 for path in frames)
+    frames = sorted(tmp_path.glob("alignment-frame-*.png"))
+    assert len(frames) == 4
+    assert all(path.read_bytes().startswith(b"\x89PNG") for path in frames)
+    assert not any(re.search(r"\de[-+]\d", path.name) for path in frames)

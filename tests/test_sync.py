@@ -88,7 +88,7 @@ def test_straight_glide_rejected():
 
 def test_gps_primary_and_date():
     track = Track(np.arange(100.)+30000, np.ones(100), np.ones(100), np.ones(100), date(2026, 1, 1))
-    gt = np.arange(10.)
+    gt = np.arange(20.)
     telem = Telemetry(gt, {}, gps_time=gt, gps_utc=1767225600+30010+gt)
     result = synchronize(track, telem)
     assert result.method == "gps"
@@ -152,3 +152,43 @@ def test_correlated_turn_proxies_are_one_agreement_group():
     assert result.confidence["best_score"] < .7
     assert result.confidence["agreeing_groups"] == ["turn"]
     assert result.status == "ambiguous"
+
+
+def _gps_case(gps_time, gps_utc):
+    track = Track(np.arange(30000., 32000.), np.ones(2000), np.ones(2000), np.ones(2000), date(2026, 1, 1))
+    time = np.arange(0., max(2., float(np.max(gps_time)) + 1), .1)
+    return synchronize(track, Telemetry(time, {}, gps_time=np.asarray(gps_time, float),
+                                        gps_utc=1767225600 + np.asarray(gps_utc, float)))
+
+
+@pytest.mark.parametrize("gps_time,gps_utc,reason", [
+    (np.arange(4) * .1, 30010 + np.arange(4) * .6, "span"),
+    (np.arange(60.), np.full(60, 30010.), "increase"),
+    (np.arange(60.), 30070 - np.arange(60.), "increase"),
+    (np.arange(60.), 30010 + 6 * np.arange(60.), "rate"),
+    (np.arange(600.), 30010 + np.arange(600.) + np.r_[np.zeros(300), np.ones(300)], "rate"),
+    (np.arange(600.), 30010 + np.arange(600.) + np.r_[np.zeros(300), np.full(300, 20.)], "GPS UTC"),
+])
+def test_gps_rejects_unusable_clock_mapping(gps_time, gps_utc, reason):
+    result = _gps_case(gps_time, gps_utc)
+    assert result.status == "ambiguous" and result.offset_seconds is None
+    assert result.method == "motion"
+    assert reason in result.confidence["gps_rejected"]
+    assert result.confidence["gps_rejected"] in result.message
+
+
+def test_gps_accepts_slow_one_hertz_clock():
+    result = _gps_case(np.arange(12.), 30010 + np.arange(12.))
+    assert result.status == "ok" and result.method == "gps"
+    assert result.offset_seconds == pytest.approx(30010)
+    assert result.to_dict()["clockRate"] == 1
+
+
+def test_track_without_whole_second_grid_is_ambiguous():
+    track = Track(np.array([10.2, 10.8]), np.zeros(2), np.zeros(2), np.zeros(2))
+    rng = np.random.default_rng(3)
+    telemetry = Telemetry(np.arange(2000.) / 10, {"GYRO": rng.normal(size=(2000, 3)),
+                                                    "ACCL": rng.normal(size=(2000, 3))})
+    result = synchronize(track, telemetry)
+    assert result.status == "ambiguous" and result.offset_seconds is None
+    assert "two whole seconds" in result.message

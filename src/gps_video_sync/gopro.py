@@ -215,6 +215,9 @@ class GoProSource:
             raw_chapters.append(raw)
             gps.extend(gps5 + gps9)
             base += chapter["duration"]
+        if not any(chapter["packets"] for chapter in chapters):
+            names = ", ".join(path.name for path in files)
+            raise ValueError(f"No GoPro telemetry (gpmd) track found in: {names}")
         grid = np.arange(0, base, 1 / hz)
         channels = {}
         for chapter, raw in zip(chapters, raw_chapters):

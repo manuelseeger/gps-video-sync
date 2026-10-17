@@ -7,6 +7,10 @@ from scipy.stats import linregress, theilslopes
 from .models import Track, Telemetry, SyncResult
 
 
+MIN_GPS_SPAN_SECONDS = 10.
+MAX_GPS_RATE_ERROR = 2e-3
+
+
 def _grid(time, values, grid, max_gap=None):
     time, values = np.asarray(time), np.asarray(values)
     if len(time) < 2 or np.any(np.diff(time) <= 0):
@@ -37,6 +41,8 @@ def _smooth(a, sigma, order=0):
 def build_features(track: Track, telemetry: Telemetry):
     utc = np.arange(np.ceil(track.time[0]), np.floor(track.time[-1])+1)
     t = np.arange(np.ceil(telemetry.time[0]), np.floor(telemetry.time[-1])+1)
+    if len(utc) < 2 or len(t) < 2:
+        return utc, t, {}, {}
     lat = _grid(track.time, track.latitude, utc)
     lon = _grid(track.time, track.longitude, utc)
     alt = _grid(track.time, track.altitude, utc)
@@ -232,6 +238,7 @@ def synchronize(track: Track, telemetry: Telemetry) -> SyncResult:
     if len(telemetry.time) < 2:
         return SyncResult("failed", message="No telemetry samples", date=track.date)
     origin_date = track.date
+    gps_rejection = ""
     finite_gps = np.isfinite(telemetry.gps_utc) & np.isfinite(telemetry.gps_time)
     if origin_date is None and finite_gps.sum() >= 3:
         stamps = telemetry.gps_utc[finite_gps]
@@ -257,24 +264,48 @@ def synchronize(track: Track, telemetry: Telemetry) -> SyncResult:
             mad = np.median(abs(residual[valid]))
             valid &= abs(residual) <= max(.5, 6*mad)
         inlier_fraction = float(valid.sum()/max(1, finite_gps.sum()))
-        if valid.sum() >= 3 and inlier_fraction >= .8:
-            gt = telemetry.gps_time[valid]
-            gu = telemetry.gps_utc[valid]-midnight
-            fit = linregress(gt, gu) if np.ptp(gt) > 0 else None
-            residual = gu-(fit.intercept+fit.slope*gt) if fit else delta[valid]-np.median(delta[valid])
+        gt = telemetry.gps_time[valid]
+        gu = telemetry.gps_utc[valid]-midnight
+        order = np.argsort(gt, kind="stable")
+        gt, gu = gt[order], gu[order]
+        fit = linregress(gt, gu) if len(gt) >= 3 and np.ptp(gt) > 0 else None
+        if valid.sum() < 3 or inlier_fraction < .8:
+            gps_rejection = "GPS UTC observations are inconsistent"
+        elif np.ptp(gt) < MIN_GPS_SPAN_SECONDS:
+            gps_rejection = f"GPS UTC observations span less than {MIN_GPS_SPAN_SECONDS:g} s"
+        elif np.any(np.diff(gt) <= 0) or np.any(np.diff(gu) <= 0):
+            gps_rejection = "GPS UTC does not increase with video time"
+        elif fit is None or abs(fit.slope-1) > MAX_GPS_RATE_ERROR:
+            gps_rejection = "GPS UTC rate is outside the accepted camera clock range"
+        else:
+            residual = gu-(fit.intercept+fit.slope*gt)
             scatter = float(np.std(residual))
             overlap = min(track.time[-1], gu.max())-max(track.time[0], gu.min())
-            if overlap >= 0 and scatter < 2:
-                detected = bool(fit and abs(fit.slope-1) > 3*fit.stderr and abs(fit.slope-1)*np.ptp(gt) > .5)
-                offset = float(fit.intercept if detected else np.median(delta[valid]))
-                return SyncResult("ok", offset, max(.5, scatter*3, 3*float(fit.intercept_stderr) if fit else 0), "gps", confidence={"gps_samples": int(valid.sum()), "gps_inlier_fraction": inlier_fraction, "residual_std_seconds": scatter},
+            if scatter >= .5:
+                gps_rejection = "GPS UTC residuals exceed 0.5 s"
+            elif overlap < 0:
+                gps_rejection = "GPS UTC does not overlap the track"
+            else:
+                detected = bool(abs(fit.slope-1) > 3*fit.stderr and abs(fit.slope-1)*np.ptp(gt) > .5)
+                offset = float(fit.intercept if detected else np.median(gu-gt))
+                return SyncResult("ok", offset, max(.5, scatter*3, 3*float(fit.intercept_stderr)), "gps", confidence={"gps_samples": int(valid.sum()), "gps_inlier_fraction": inlier_fraction, "gps_span_seconds": float(np.ptp(gt)), "residual_std_seconds": scatter},
                                   drift={"detected": detected, "clock_rate": float(fit.slope) if detected else 1.,
-                                         "seconds_per_hour": float((fit.slope-1)*3600) if fit else None,
-                                         "stderr_seconds_per_hour": float(fit.stderr*3600) if fit else None},
+                                         "measured_clock_rate": float(fit.slope),
+                                         "seconds_per_hour": float((fit.slope-1)*3600),
+                                         "stderr_seconds_per_hour": float(fit.stderr*3600)},
                                   chapters=telemetry.chapters, date=origin_date)
+    elif len(telemetry.gps_time):
+        gps_rejection = "Too few GPS UTC observations or no track date"
     utc, t, tf, vf = build_features(track, telemetry)
-    result = match_features(utc, t, tf, vf)
+    if len(utc) < 2 or len(t) < 2:
+        result = SyncResult("ambiguous", message="Track or video spans less than two whole seconds")
+    else:
+        result = match_features(utc, t, tf, vf)
     result.date, result.chapters = track.date, telemetry.chapters
+    if gps_rejection:
+        result.confidence["gps_rejected"] = gps_rejection
+        if result.status != "ok":
+            result.message = f"{gps_rejection}; motion: {result.message}"
     if result.status == "ok":
         key = result.confidence["refinement_feature"]
         result.drift = estimate_drift(utc, t, tf[key], vf[key], result.offset_seconds, absolute=key == "yaw")

@@ -37,3 +37,21 @@ def test_no_valid_fixes(tmp_path):
     path.write_text(fix("120000", "V"))
     with pytest.raises(ValueError, match="valid"):
         IGCReader().read(path)
+
+
+def test_invalid_records_do_not_change_clock(tmp_path):
+    path = tmp_path / "afternoon.igc"
+    path.write_text("HFDTE161026\n" + "\n".join([
+        fix("140000"), fix("000000", "V"), "B0000004549386N0114615XEA0000000700",
+        "B0000004549386X01146150EA0000000700", fix("140010"), fix("140020")]))
+    track = IGCReader().read(path)
+    np.testing.assert_equal(track.time, [50400, 50410, 50420])
+
+
+def test_genuine_midnight_rollover_after_invalid_records(tmp_path):
+    path = tmp_path / "night.igc"
+    path.write_text("HFDTE161026\n" + "\n".join([
+        fix("235950"), fix("000005", "V"), "B0000054549386N0114615XEA0000000700",
+        fix("000010"), fix("000020")]))
+    track = IGCReader().read(path)
+    np.testing.assert_equal(track.time, [86390, 86410, 86420])

@@ -9,7 +9,7 @@ import pytest
 
 from mp4_builder import Track, box, build, table, video as video_track
 
-from gps_video_sync import gopro, mp4
+from gps_video_sync import gopro, gpmf, mp4
 from gps_video_sync.gopro import GoProSource
 from gps_video_sync.gpmf import DTYPES, number, records, scaled, streams
 
@@ -181,10 +181,24 @@ def test_invalid_gpsu_ignored(tmp_path, bad):
 
 def test_missing_gpmd_stream(tmp_path):
     path = video(tmp_path, "plain.mp4", [], duration=1)
-    result = GoProSource().read([path], hz=2, cache_dir=tmp_path / "cache")
-    assert result.channels == {}
-    assert result.chapters[0]["packets"] == 0
-    np.testing.assert_array_equal(result.time, [0, .5])
+    with pytest.raises(ValueError, match=r"No GoPro telemetry \(gpmd\) track found in: plain.mp4"):
+        GoProSource().read([path], hz=2, cache_dir=tmp_path / "cache")
+
+
+def test_chapter_without_gpmd_is_nan(tmp_path):
+    first = video(tmp_path, "a.mp4", [packet(stream(numeric("ACCL", [[1, 2, 3]])))], duration=1)
+    second = video(tmp_path, "b.mp4", [], duration=1)
+    result = GoProSource().read([first, second], hz=2, cache_dir=tmp_path / "cache")
+    assert [c["packets"] for c in result.chapters] == [1, 0]
+    assert np.isnan(result.channels["ACCL"][2:]).all()
+
+
+def test_deep_gpmf_nesting_is_rejected():
+    payload = stream(numeric("ACCL", [[1, 2, 3]]))
+    for _ in range(gpmf.MAX_DEPTH + 2):
+        payload = record("DEVC", "\0", 1, len(payload), payload)
+    with pytest.raises(ValueError, match="too deep"):
+        list(streams(payload))
 
 
 def test_variable_sample_durations(tmp_path):

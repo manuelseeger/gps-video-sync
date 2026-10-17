@@ -28,8 +28,11 @@ utc_seconds = video_seconds * clockRate + offset_seconds
 
 `videoStartUtcSeconds` aliases the offset. `video_start_utc` is an ISO timestamp
 when a track date and offset exist. `videoStartUtc` is its clock time.
-`dateUtc` and `utc_origin_date` identify the track date. A video start across
-midnight can have a different calendar date.
+`utc_origin_date` is the track date. It is the origin of `offset_seconds` and of
+all track times. `dateUtc` is the UTC calendar date of the video start. The two
+dates differ when the video starts after the track date's midnight, for example
+an offset of 86410 seconds gives `utc_origin_date` 2026-01-01 and `dateUtc`
+2026-01-02. Without a track date, `dateUtc` and `utc_origin_date` are `null`.
 
 `clockDriftDetected`, `clockRate`, and `estimatedAbsoluteUncertaintySeconds`
 report drift and uncertainty. An ambiguous result has no offset.
@@ -65,6 +68,9 @@ Sample times follow ISO edit mapping without a snap to packet boundaries:
 sample_time = leading_empty_seconds + (composition_ticks - media_time) / track_scale - video_origin
 ```
 
+A video with no `gpmd` samples in any chapter raises `ValueError`. A chapter
+without `gpmd` samples has `packets` 0 and NaN channel rows.
+
 `ctts` version 0 offsets are unsigned. Version 1 offsets are signed.
 The video origin is zero with a populated video edit list. Otherwise it is
 the minimum video presentation time, or zero for an empty video table.
@@ -93,7 +99,8 @@ Samples that end at or before the media edit starts are omitted.
 The reader retains at most 64 MiB of metadata and visits at most 100000 boxes.
 It permits at most 128 tracks, 1024 edits per selected track, and 10000000
 samples across selected tracks. GPMF output is limited to 100000 samples with
-at most 16 MiB per payload. A limit violation raises `ValueError`.
+at most 16 MiB per payload. GPMF containers can nest at most eight levels.
+A limit violation raises `ValueError`.
 
 Available channels are `GYRO` in rad/s, `ACCL` in m/s², `GRAV` as native unit
 vectors, and `CORI` and `IORI` as native unit quaternions. Missing channels are
@@ -114,6 +121,12 @@ paths, file sizes, nanosecond modification times, sample rate, and extractor
 cache version. Writes are atomic. An unavailable cache does not stop extraction.
 Cache files can contain GPS coordinates and times.
 
+Chapter metadata `file` holds the absolute path of each chapter. Results,
+`info` output, telemetry exports, and cache files include this metadata. The
+paths can show user names and directory names. Remove or replace `chapters`
+before you share these files. Frame extraction needs chapter paths that are
+local files on the current computer.
+
 ## Plugins
 
 `register_track(name, reader)` registers a `TrackReader` instance with
@@ -132,6 +145,9 @@ Frame extraction accepts chapter `path` or `file`, start fields `start_seconds`,
 `start`, or `video_start`, and end fields `end_seconds`, `end`, or `video_end`.
 A `duration` can replace an end field when a start exists. Intervals are
 half-open. A boundary selects the next chapter. A single video needs no chapter metadata.
+Each chapter path must be an existing local file. URLs and other FFmpeg protocol
+names are rejected. FFmpeg receives a `file:` path with only the `file` protocol
+allowed. Seek times use fixed-point seconds with six decimals.
 
 ## CLI and telemetry formats
 
@@ -150,7 +166,11 @@ chapter metadata. `telemetry --out` accepts `.npz` or `.json`.
 including ambiguous results. Expected input and tool errors go to stderr without
 a Python traceback.
 
-`verify` reads `--result` or runs synchronization. Its plot compares normalized
+`verify` reads `--result` or runs synchronization. A saved result must contain a
+numeric `offset_seconds` or `videoStartUtcSeconds`. `clockRate` must be a
+positive number or `null`. When `clockRate` is `null`, `drift.clock_rate` is used;
+when both are absent or `null`, the clock rate is 1. Invalid values give exit
+code 1. Its plot compares normalized
 track and video motion features on the mapped UTC axis. The plot is a visual
 check, not a confidence score. Frame PNGs are saved beside the plot.
 A result without an offset cannot be plotted.
@@ -169,11 +189,34 @@ not a CLI input format.
 ## Motion matching limits
 
 Camera GPS UTC is the primary reference when usable. Motion matching is the
-fallback when GPS time is absent or inconsistent with the track.
+fallback when GPS time is absent or unusable. GPS time is usable when all of
+these conditions are true:
+
+- A track date exists, or the camera GPS establishes one.
+- At least three finite observations exist, and at least 80% are inliers of a
+  robust line fit.
+- The inliers span at least 10 seconds of video time.
+- Video time and GPS UTC both strictly increase across the inliers.
+- The fitted clock rate is within 0.002 of 1 (7.2 seconds per hour). This is
+  more than ten times the usual tolerance of camera clock crystals. Larger rates
+  come from frozen, stepped, or wrong UTC values.
+- The residual standard deviation is below 0.5 seconds.
+- The GPS interval overlaps the track.
+
+When GPS time is present but unusable, `confidence.gps_rejected` gives the
+reason. A motion result that is not accepted also states that reason in
+`message`.
 Filtering operates on separate valid runs. Search uses masked, normalized FFT
 correlations, then local 0.1-second refinement.
 
-The minimum usable overlap is 90 seconds. Acceptance requires a weighted score
+Each feature needs an overlap of at least 90 seconds and at least 65% of the
+shorter finite feature sequence. Finite samples exclude gaps, filter edges, and
+track fixes slower than 3 m/s. Camera motion before launch, for example on the
+ground, is still finite. Thus a 900-second clip with 540 seconds of flight
+motion and 360 seconds of pre-launch time does not meet the 65% rule and is
+ambiguous. Trim the video telemetry to the flight with `Telemetry.slice` when
+most of a clip is before launch or after landing. A track or video that spans
+less than two whole seconds is ambiguous. Acceptance requires a weighted score
 of at least 0.38, a margin of at least 0.08, and a best-to-alternative ratio of at
 least 1.2. Alternative offsets exclude a 25-second neighborhood around the best
 peak. At least two features must agree within eight seconds unless one feature

@@ -22,7 +22,15 @@ DTYPES = {
 }
 
 
+MAX_DEPTH = 8
+
+
 def records(buf: bytes) -> Iterator[Record]:
+    for record in _records(memoryview(buf)):
+        yield record._replace(data=bytes(record.data))
+
+
+def _records(buf: memoryview) -> Iterator[Record]:
     offset = 0
     while offset < len(buf):
         if len(buf) - offset < 8:
@@ -42,11 +50,14 @@ def records(buf: bytes) -> Iterator[Record]:
 
 
 def streams(buf: bytes, _depth: int = 0) -> Iterator[list[Record]]:
-    if _depth > 32:
+    """Yield STRM records. Nesting is limited to MAX_DEPTH containers, and
+    payload bytes are not copied between levels, so work is linear in size."""
+    if _depth > MAX_DEPTH:
         raise ValueError("GPMF container nesting is too deep")
-    for record in records(buf):
+    view = buf if isinstance(buf, memoryview) else memoryview(buf)
+    for record in _records(view):
         if record.key == "STRM":
-            yield list(records(record.data))
+            yield [r._replace(data=bytes(r.data)) for r in _records(record.data)]
         elif record.typ == "\0":
             yield from streams(record.data, _depth + 1)
 
