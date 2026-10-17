@@ -197,16 +197,23 @@ these conditions are true:
   robust line fit.
 - The inliers span at least 10 seconds of video time.
 - Video time and GPS UTC both strictly increase across the inliers.
-- The fitted clock rate is within 0.002 of 1 (7.2 seconds per hour). This is
-  more than ten times the usual tolerance of camera clock crystals. Larger rates
-  come from frozen, stepped, or wrong UTC values.
+- The fitted clock rate differs from 1 by at most 0.002 (7.2 seconds per hour),
+  plus three standard errors of the fitted rate, plus 0.2 seconds divided by the
+  GPS span. The last term allows for slow wander of up to 0.1 seconds over a
+  short span. 0.002 is more than ten times the usual
+  tolerance of camera clock crystals. Larger rates come from frozen, stepped, or
+  wrong UTC values.
 - The residual standard deviation is below 0.5 seconds.
 - No UTC step occurs. The check splits the time-ordered observations at every
   position within 60 observations of each end and at 200 evenly spaced
   positions. At each split, it compares the median detrended offset of all
   earlier observations with that of all later observations. A difference of
   more than 0.1 seconds, and of more than six standard errors, is a step. The
-  standard error includes observation noise and the detrending rate error. The
+  standard error includes observation noise and the detrending rate error.
+  The noise level is the greater of the white noise between adjacent
+  observations and the slow wander about a robust line. The rate error is the
+  greater of the white-noise estimate and the spread of median rates in five
+  contiguous blocks of observation pairs. The
   detrending rate comes only from observation pairs on the same side of the
   split. The check uses all finite observations before outlier removal.
   Isolated outliers and short excursions inside the interval are not steps.

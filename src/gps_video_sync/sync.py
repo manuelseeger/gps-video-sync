@@ -340,7 +340,8 @@ def synchronize(track: Track, telemetry: Telemetry) -> SyncResult:
             gps_rejection = f"GPS UTC observations span less than {MIN_GPS_SPAN_SECONDS:g} s"
         elif np.any(np.diff(gt) <= 0) or np.any(np.diff(gu) <= 0):
             gps_rejection = "GPS UTC does not increase with video time"
-        elif fit is None or abs(fit.slope-1)-3*fit.stderr > MAX_GPS_RATE_ERROR:
+        elif fit is None or (abs(fit.slope-1) > MAX_GPS_RATE_ERROR + 3*fit.stderr
+                             + 2*GPS_STEP_SECONDS/float(np.ptp(gt))):
             gps_rejection = "GPS UTC rate is outside the accepted camera clock range"
         else:
             residual = gu-(fit.intercept+fit.slope*gt)

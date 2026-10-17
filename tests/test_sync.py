@@ -267,3 +267,11 @@ def test_slowly_wandering_gps_is_not_a_step():
     result = _gps_case(gt, 30010 + gt + noise)
     assert result.method == "gps"
     assert abs(result.offset_seconds - 30010) <= result.uncertainty_seconds
+
+
+def test_short_span_high_rate_gps_wander_is_accepted():
+    gt = np.arange(600.) / 18
+    noise = .045*np.cos(np.linspace(0, np.pi, 600)) + np.random.default_rng(1).uniform(-.005, .005, 600)
+    result = _gps_case(gt, 30010 + gt + noise)
+    assert result.method == "gps"
+    assert abs(result.offset_seconds - 30010) <= result.uncertainty_seconds
