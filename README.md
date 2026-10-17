@@ -12,8 +12,13 @@ Requires Python 3.10 or later. From the repository root:
 pip install .
 ```
 
-GoPro extraction requires `ffprobe` on `PATH`. To create verification plots,
-install `'.[verify]'`. Frame extraction also requires `ffmpeg`.
+GoPro video input requires [ffprobe](https://ffmpeg.org/ffprobe.html) at runtime.
+Install it through your operating system's FFmpeg package and make sure that
+`ffprobe` is on `PATH`. The Python package does not install it. Core matching
+with existing telemetry or NPZ input does not require `ffprobe`.
+
+To create verification plots, install `'.[verify]'`. Frame extraction also
+requires `ffmpeg` on `PATH`.
 
 ## Align a recording
 
