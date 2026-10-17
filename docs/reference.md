@@ -204,21 +204,17 @@ these conditions are true:
   tolerance of camera clock crystals. Larger rates come from frozen, stepped, or
   wrong UTC values.
 - The residual standard deviation is below 0.5 seconds.
-- No UTC step occurs. The check splits the time-ordered observations at every
-  position within 60 observations of each end and at 200 evenly spaced
-  positions. At each split, it compares the median detrended offset of all
-  earlier observations with that of all later observations. A difference of
-  more than 0.1 seconds, and of more than six standard errors, is a step. The
-  standard error includes observation noise and the detrending rate error.
-  The noise level is the greater of the white noise between adjacent
-  observations and the slow wander about a robust line. The rate error is the
-  greater of the white-noise estimate and the spread of median rates in five
-  contiguous blocks of observation pairs. The
-  detrending rate comes only from observation pairs on the same side of the
-  split. The check uses all finite observations before outlier removal.
-  Isolated outliers and short excursions inside the interval are not steps.
-  Deviating observations at the start or end of the interval, including a
-  single first or last observation, are steps.
+- No UTC step occurs. The check removes a robust long-baseline rate from the
+  offsets of all finite observations, before outlier removal. At each position,
+  it compares the median of the preceding window of observations with the
+  median of the following window. The window is one twentieth of the
+  observations, at least 3 and at most 30. Near the start and end, the window
+  shrinks to the available observations, down to one. A difference of more
+  than 0.1 seconds, and of more than six standard errors of the white noise
+  between adjacent observations, is a step. Noise within ±0.05 seconds cannot
+  cause a step. A single outlier inside the interval is not a step. A plateau
+  of three or more deviating observations is two steps. A deviating first or
+  last observation is a step.
 - The GPS interval overlaps the track.
 - The estimated uncertainty is at most 2 seconds over the whole video timeline.
 

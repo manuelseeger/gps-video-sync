@@ -275,3 +275,15 @@ def test_short_span_high_rate_gps_wander_is_accepted():
     result = _gps_case(gt, 30010 + gt + noise)
     assert result.method == "gps"
     assert abs(result.offset_seconds - 30010) <= result.uncertainty_seconds
+
+
+@pytest.mark.parametrize("deviation", [
+    lambda t, noise: noise + .3*(t >= 300),
+    lambda t, noise: ((t >= 120) & (t < 240)).astype(float),
+    lambda t, noise: noise + .3*((t >= 200) & (t < 230)),
+])
+def test_noisy_steps_and_plateaus_are_rejected(deviation):
+    t = np.arange(600.)
+    noise = np.random.default_rng(0).uniform(-.05, .05, 600)
+    result = _gps_case(t, 30010 + t + deviation(t, noise))
+    assert result.method == "motion" and "step" in result.confidence["gps_rejected"]
