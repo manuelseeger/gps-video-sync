@@ -258,10 +258,8 @@ frame extraction are exercised with the real recording.
 
 Only one real flight and mount type is available. Other flights/mounts must be
 validated before motion matching is considered stable. Camera GPS parsing is
-covered by synthetic tests, not a real GPS-enabled recording. No viewer files
-are changed; the JSON output supplies its sync-input keys.
+covered by synthetic tests, not a real GPS-enabled recording.
 
 ## License
 
-License selection requires the repository owner's decision. No license grant is
-included.
+MIT. See `LICENSE`.
