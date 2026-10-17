@@ -16,6 +16,7 @@ GPS_STEP_SECONDS = .1
 
 GPS_STEP_WINDOWS = (3, 5, 10, 20, 30)
 GPS_STEP_NOISE_CAP = .15
+GPS_GAP_SECONDS = 2.
 
 
 def _gps_step(time, delta):
@@ -70,6 +71,31 @@ def _gps_step(time, delta):
                        split-lo, hi-split, float(time[hi-1]-time[lo])):
                 return True
     return False
+
+
+def _within_run_rate(time, utc):
+    """Rate of UTC against video time inside runs separated by gaps.
+
+    A gap is longer than GPS_GAP_SECONDS and five median sample intervals.
+    Each run has its own offset, so a step at a gap does not change the rate.
+    Returns the rate, its bound for noise within +-GPS_STEP_SECONDS/2, and
+    its standard error.
+    """
+    steps = np.diff(time)
+    gap = max(GPS_GAP_SECONDS, 5*float(np.median(steps)))
+    run = np.r_[0, np.cumsum(steps > gap)]
+    counts = np.bincount(run)
+    centered_time = time-(np.bincount(run, time)/counts)[run]
+    centered_utc = utc-(np.bincount(run, utc)/counts)[run]
+    weight = float(np.sum(centered_time**2))
+    if weight <= 0:
+        return 1., np.inf, np.inf
+    rate = float(np.sum(centered_time*centered_utc))/weight
+    residual = centered_utc-rate*centered_time
+    freedom = max(1, len(time)-len(counts)-1)
+    stderr = float(np.sqrt(np.sum(residual**2)/freedom/weight))
+    bound = GPS_STEP_SECONDS/2*float(np.sum(abs(centered_time)))/weight
+    return rate, bound, stderr
 
 
 def _grid(time, values, grid, max_gap=None):
@@ -320,6 +346,10 @@ def synchronize(track: Track, telemetry: Telemetry) -> SyncResult:
             order = np.argsort(x)
             third = max(1, len(x)//3)
             lo, hi = order[:third], order[-third:]
+            # Prefer thirds of the time span, so that a gap does not mix them.
+            early, late = x <= x.min()+np.ptp(x)/3, x >= x.max()-np.ptp(x)/3
+            if early.sum() >= 3 and late.sum() >= 3:
+                lo, hi = np.flatnonzero(early), np.flatnonzero(late)
             span = np.median(x[hi])-np.median(x[lo])
             slope = (np.median(y[hi])-np.median(y[lo]))/span if span > 0 else 0.
             intercept = np.median(y-slope*x)
@@ -352,18 +382,19 @@ def synchronize(track: Track, telemetry: Telemetry) -> SyncResult:
             last = max(float(gt[-1]), float(telemetry.time[-1]))
             rate_error = abs(fit.slope-1)
             detected = bool(rate_error > 3*fit.stderr and rate_error*(last-first) > .5)
-            if detected:
-                offset = float(fit.intercept)
-                reach = 3*(float(fit.intercept_stderr) + float(fit.stderr)*max(abs(first), abs(last)))
-                # An undetected step below GPS_STEP_SECONDS can bias the fitted rate.
-                reach += 1.5*GPS_STEP_SECONDS*max(abs(first), abs(last), last-first)/float(np.ptp(gt))
-            else:
-                offset = float(np.median(gu-gt))
-                center = float(np.mean(gt))
-                # An undetected step below GPS_STEP_SECONDS can bias the median.
-                reach = (rate_error + 3*float(fit.stderr))*max(center-first, last-center) + GPS_STEP_SECONDS
+            within, within_bound, within_stderr = _within_run_rate(gt, gu)
+            centered = gt-gt.mean()
+            global_bound = GPS_STEP_SECONDS/2*float(np.sum(abs(centered))/np.sum(centered**2))
+            rate_used = float(fit.slope) if detected else 1.
+            offset = float(fit.intercept) if detected else float(np.median(gu-gt))
+            # Error at the observation center plus the rate error, which the
+            # rate within GPS runs bounds, extrapolated to the video ends.
+            possible_rate_error = abs(rate_used-within)+within_bound+3*within_stderr
+            reach = GPS_STEP_SECONDS+possible_rate_error*max(abs(first-gt.mean()), abs(last-gt.mean()))
             uncertainty = max(.5, scatter*3, reach)
-            if scatter >= .5:
+            if abs(fit.slope-within) > within_bound+global_bound+3*np.hypot(within_stderr, fit.stderr):
+                gps_rejection = f"GPS UTC has a step of more than {GPS_STEP_SECONDS:g} s at a gap"
+            elif scatter >= .5:
                 gps_rejection = "GPS UTC residuals exceed 0.5 s"
             elif overlap < 0:
                 gps_rejection = "GPS UTC does not overlap the track"

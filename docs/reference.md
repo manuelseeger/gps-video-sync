@@ -194,7 +194,9 @@ these conditions are true:
 
 - A track date exists, or the camera GPS establishes one.
 - At least three finite observations exist, and at least 80% are inliers of a
-  robust line fit.
+  robust line fit. The line connects the medians of the first and last thirds
+  of the GPS time span, or of the observations when a time third has fewer than
+  three observations.
 - The inliers span at least 10 seconds of video time.
 - Video time strictly increases across the inliers. GPS UTC increases from the
   first to the last inlier and never decreases by more than 0.1 seconds.
@@ -227,11 +229,21 @@ GPS UTC values outside the years 1970 to 9998 are ignored. The fitted clock rate
 is used when it is significant and changes the mapping by more than 0.5 seconds
 over the combined interval of the video timeline and the GPS observations.
 Otherwise `clockRate` is 1 and the offset is the median at the GPS observations.
-The uncertainty includes the possible rate error extrapolated to the video start
-and end. It also includes the effect of an undetected step of up to 0.1
-seconds: 0.1 seconds on the median offset, or the resulting bias of a fitted
-rate. Therefore a short GPS interval far from the video start does not give a
-GPS result.
+
+A gap in the GPS observations is longer than 2 seconds and five median sample
+intervals. Gaps divide the observations into runs. The within-run rate is the
+least-squares rate with a separate offset for each run, so a step at a gap does
+not change it. Its bound is the largest rate error that noise within ±0.05
+seconds can cause. When the overall fitted rate differs from the within-run
+rate by more than both bounds and three combined standard errors, the GPS UTC
+has a step at a gap.
+
+The uncertainty is 0.1 seconds at the center of the GPS observations, plus the
+possible rate error times the distance to the farther video end. The possible
+rate error is the difference between the used rate and the within-run rate,
+plus the within-run bound and three standard errors. Therefore a short GPS
+interval far from the video start does not give a GPS result, and a step at a
+gap that the runs cannot separate from a rate change increases the uncertainty.
 
 When GPS time is present but unusable, `confidence.gps_rejected` gives the
 reason. A motion result that is not accepted also states that reason in

@@ -320,3 +320,23 @@ def test_plateau_under_alternating_jitter_is_rejected():
     utc[50:55] += .3
     result = _gps_case(t, utc)
     assert result.method == "motion" and "step" in result.confidence["gps_rejected"]
+
+
+def test_gps_after_early_gap_keeps_early_observations():
+    t = np.r_[[0., .1, .2], 30 + np.arange(57)*.1]
+    result = _gps_case(t, 30010 + t + .049*np.cos(np.linspace(0, np.pi, 60)))
+    assert result.method == "gps"
+    assert abs(result.offset_seconds - 30010) <= result.uncertainty_seconds
+
+
+def test_step_at_gps_gap_is_rejected_or_covered():
+    t = np.arange(600.)
+    t[300:] += 40
+    result = _gps_case(t, 30010 + t + .3*(np.arange(600) >= 300))
+    assert result.method == "motion" and "step" in result.confidence["gps_rejected"]
+    t = np.arange(60.)
+    t[30:] += 40
+    result = _gps_case(t, 30010 + t + .3*(np.arange(60) >= 30))
+    if result.method == "gps":
+        for truth in (30010, 30010.3):
+            assert abs(result.offset_seconds - truth) <= result.uncertainty_seconds
