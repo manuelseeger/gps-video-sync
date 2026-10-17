@@ -14,20 +14,40 @@ MAX_UNIX_SECONDS = 253370764800.
 GPS_STEP_SECONDS = .1
 
 
+GPS_STEP_MIN_RUN = 3
+
+
 def _gps_step(time, delta):
-    """True when the median clock offset changes by more than GPS_STEP_SECONDS
-    between adjacent runs of observations. Single outliers do not count."""
+    """True when the clock offset before a split differs from the offset after it.
+
+    For each split, the medians of all earlier and all later detrended
+    observations are compared. The detrending rate is the median rate of
+    observation pairs, 10% of the observations apart, that do not cross the
+    split. A step needs at least GPS_STEP_MIN_RUN observations on each side. The threshold is the greater of GPS_STEP_SECONDS
+    and six standard errors of the median difference. Isolated outliers and
+    short excursions do not move both medians, so they are not steps.
+    """
     order = np.argsort(time, kind="stable")
     time, delta = time[order], delta[order]
-    k = max(3, min(30, len(time)//10))
-    if len(time) < 2*k:
+    n = len(time)
+    if n < 2*GPS_STEP_MIN_RUN:
         return False
-    steps = np.diff(time)
-    rates = np.diff(delta)[steps > 0]/steps[steps > 0]
-    level = delta - (float(np.median(rates)) if len(rates) else 0.)*time
-    windows = np.lib.stride_tricks.sliding_window_view(level, k)
-    medians = np.median(windows, axis=1)
-    return bool(np.any(abs(medians[k:]-medians[:-k]) > GPS_STEP_SECONDS))
+    lag = max(1, n//10)
+    baseline = time[lag:]-time[:-lag]
+    pair_rates = np.where(baseline > 0, (delta[lag:]-delta[:-lag])/np.where(baseline > 0, baseline, 1), np.nan)
+    noise = 1.4826*float(np.median(abs(np.diff(delta))))/np.sqrt(2)
+    edge = np.arange(GPS_STEP_MIN_RUN, min(n//2, 60)+1)
+    splits = np.unique(np.r_[edge, n-edge, np.linspace(GPS_STEP_MIN_RUN, n-GPS_STEP_MIN_RUN, 200).astype(int)])
+    for split in splits:
+        # Rates from observation pairs on the same side of the split.
+        rates = np.r_[pair_rates[:max(0, split-lag)], pair_rates[split:]]
+        rates = rates[np.isfinite(rates)]
+        slope = float(np.median(rates)) if len(rates) else 0.
+        before, after = delta[:split]-slope*time[:split], delta[split:]-slope*time[split:]
+        error = 1.25*noise*np.sqrt(1/len(before)+1/len(after))
+        if abs(np.median(after)-np.median(before)) > max(GPS_STEP_SECONDS, 6*error):
+            return True
+    return False
 
 
 def _grid(time, values, grid, max_gap=None):

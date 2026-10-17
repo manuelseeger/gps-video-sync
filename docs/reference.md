@@ -201,10 +201,14 @@ these conditions are true:
   more than ten times the usual tolerance of camera clock crystals. Larger rates
   come from frozen, stepped, or wrong UTC values.
 - The residual standard deviation is below 0.5 seconds.
-- No UTC step occurs. A step is a change of more than 0.1 seconds between the
-  median detrended offsets of two adjacent runs of observations. Each run has 10%
-  of the observations, with a minimum of 3 and a maximum of 30. The check uses all
-  finite observations before outlier removal. Single outliers are not steps.
+- No UTC step occurs. For each split of the observations, the check compares the
+  median detrended offset of all earlier observations with that of all later
+  observations. Each side has at least 3 observations. A difference of more than
+  0.1 seconds, and of more than six standard errors, is a step. The detrending
+  rate comes only from observation pairs on the same side of the split. The
+  check uses all finite observations before outlier removal. Isolated outliers
+  and short excursions inside the interval are not steps. Deviating
+  observations at the start or end of the interval count as steps.
 - The GPS interval overlaps the track.
 - The estimated uncertainty is at most 2 seconds over the whole video timeline.
 

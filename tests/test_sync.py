@@ -208,7 +208,8 @@ def test_gps_far_from_video_start_uses_rate_or_rejects():
 
 
 @pytest.mark.parametrize("start", [0, 10000])
-@pytest.mark.parametrize("at,size", [(500, 1), (100, 1), (900, 1), (500, .2), (40, .3), (960, -.3)])
+@pytest.mark.parametrize("at,size", [(500, 1), (100, 1), (900, 1), (500, .2), (40, .3), (960, -.3),
+                                     (10, 1), (990, 1)])
 @pytest.mark.parametrize("noise", [0, .02])
 def test_gps_utc_steps_are_rejected(start, at, size, noise):
     gt = start + np.arange(1000.)
@@ -234,3 +235,13 @@ def test_gps_out_of_range_utc_without_track_date():
     for stamp in (1e20, 253402214400., 253370764799.):
         result = synchronize(track, Telemetry(gt, {}, gps_time=gt, gps_utc=stamp + gt))
         assert result.status == "ambiguous" and result.offset_seconds is None
+
+
+@pytest.mark.parametrize("lock", [0, 300, 600])
+def test_clean_noisy_gps_is_not_a_step(lock):
+    for seed in range(40):
+        rng = np.random.default_rng(seed)
+        gt = lock + np.arange(1200. - lock)
+        result = _gps_case(gt, 30010 + gt + rng.uniform(-.05, .05, len(gt)))
+        assert result.method == "gps", (seed, result.confidence)
+        assert abs(result.offset_seconds - 30010) <= result.uncertainty_seconds
