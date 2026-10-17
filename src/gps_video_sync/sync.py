@@ -15,21 +15,27 @@ GPS_STEP_SECONDS = .1
 
 
 GPS_STEP_WINDOWS = (3, 5, 10, 20, 30)
+GPS_STEP_NOISE_CAP = .15
 
 
 def _gps_step(time, delta):
     """True when the clock offset changes abruptly between adjacent runs.
 
-    The offsets are detrended with a robust long-baseline rate. For each window
-    size in GPS_STEP_WINDOWS up to n/2 and each split, the median of the window
-    before the split is compared with the median of the window after it. Near
-    the ends a window shrinks to the available observations, down to one.
-    A difference of more than GPS_STEP_SECONDS and more than six standard
-    errors, after an allowance for the detrending rate error over the distance
-    between the windows, is a step. The standard error uses the white noise between adjacent
-    observations. Observation noise within +-GPS_STEP_SECONDS/2 cannot make two
-    medians differ by more than GPS_STEP_SECONDS. A single outlier inside the
-    interval does not move a median of three or more observations.
+    The offsets are detrended with the rate between the medians of the first
+    and last thirds. For each window size in GPS_STEP_WINDOWS up to n/2 and
+    each split, the median of the window before the split is compared with the
+    median of the window after it. Near the ends a window shrinks to the
+    available observations, down to one.
+
+    Noise within +-GPS_STEP_SECONDS/2 changes a median by at most
+    GPS_STEP_SECONDS/2. The detrending rate error is then at most
+    (GPS_STEP_SECONDS + |rate| * time range of both thirds) / span. Over the
+    time extent of a window pair, the rate error adds at most that rate error
+    times the extent. A difference greater than GPS_STEP_SECONDS plus this
+    allowance is therefore not caused by such noise. The threshold is also at
+    least six standard errors of the white noise between adjacent observations,
+    capped at GPS_STEP_NOISE_CAP, so that noisier data needs more evidence but
+    a step of 3 * GPS_STEP_SECONDS stays detectable.
     """
     order = np.argsort(time, kind="stable")
     time, delta = time[order], delta[order]
@@ -38,30 +44,30 @@ def _gps_step(time, delta):
         return False
     third = max(1, n//3)
     span = float(np.median(time[-third:])-np.median(time[:third]))
-    rate = (np.median(delta[-third:])-np.median(delta[:third]))/span if span > 0 else 0.
+    if span <= 0:
+        return False
+    rate = (np.median(delta[-third:])-np.median(delta[:third]))/span
     level = delta-rate*time
-    # Noise within +-GPS_STEP_SECONDS/2 changes each third's median by at most
-    # that much, so the detrending rate error is at most GPS_STEP_SECONDS/span.
-    rate_error = GPS_STEP_SECONDS/span if span > 0 else np.inf
+    ranges = float(np.ptp(time[:third])+np.ptp(time[-third:]))
+    rate_error = (GPS_STEP_SECONDS+abs(rate)*ranges)/span
     noise = 1.4826*float(np.median(abs(np.diff(level))))/np.sqrt(2)
 
-    def stepped(before, after, size_before, size_after, distance):
-        error = 1.25*noise*np.sqrt(1/size_before+1/size_after)
-        return np.any(abs(after-before)-rate_error*distance > np.maximum(GPS_STEP_SECONDS, 6*error))
+    def stepped(before, after, size_before, size_after, extent):
+        error = min(GPS_STEP_NOISE_CAP, 6*1.25*noise*np.sqrt(1/size_before+1/size_after))
+        return np.any(abs(after-before)-rate_error*extent > max(GPS_STEP_SECONDS, error))
 
     for window in [w for w in GPS_STEP_WINDOWS if w <= n//2] or [1]:
         if n >= 2*window:
             medians = np.median(np.lib.stride_tricks.sliding_window_view(level, window), axis=1)
-            centers = np.mean(np.lib.stride_tricks.sliding_window_view(time, window), axis=1)
-            if stepped(medians[:-window], medians[window:], window, window, centers[window:]-centers[:-window]):
+            extent = time[2*window-1:]-time[:n-2*window+1]
+            if stepped(medians[:-window], medians[window:], window, window, extent):
                 return True
         for split in range(1, n):
             if window <= split <= n-window:
                 continue
-            lo, hi = max(0, split-window), split+window
-            before, after = level[lo:split], level[split:hi]
-            distance = float(np.mean(time[split:hi])-np.mean(time[lo:split]))
-            if stepped(np.median(before), np.median(after), len(before), len(after), distance):
+            lo, hi = max(0, split-window), min(n, split+window)
+            if stepped(np.median(level[lo:split]), np.median(level[split:hi]),
+                       split-lo, hi-split, float(time[hi-1]-time[lo])):
                 return True
     return False
 

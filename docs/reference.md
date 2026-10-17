@@ -205,18 +205,20 @@ these conditions are true:
   tolerance of camera clock crystals. Larger rates come from frozen, stepped, or
   wrong UTC values.
 - The residual standard deviation is below 0.5 seconds.
-- No UTC step occurs. The check removes a robust long-baseline rate from the
-  offsets of all finite observations, before outlier removal. For window sizes
-  of 3, 5, 10, 20, and 30 observations, up to half the observations, and at each
-  position, it compares the median of the preceding window with the median of
-  the following window. Near the start and end, a window shrinks to the
-  available observations, down to one. A difference of more than 0.1 seconds,
-  and of more than six standard errors of the white noise between adjacent
-  observations, is a step. Before the comparison, the difference is reduced by
-  the possible detrending rate error, 0.1 seconds divided by the distance
-  between the medians of the first and last thirds, times the distance between
-  the two windows. Noise within ±0.05 seconds cannot cause a step. A
-  single outlier inside the interval is not a step. A deviating first or last
+- No UTC step occurs. The check uses all finite observations, before outlier
+  removal. It removes the rate between the medians of the first and last thirds
+  of the observations. For window sizes of 3, 5, 10, 20, and 30 observations,
+  up to half the observations, and at each position, it compares the median of
+  the preceding window with the median of the following window. Near the start
+  and end, a window shrinks to the available observations, down to one. The
+  difference is first reduced by the possible detrending rate error times the
+  time from the first to the last observation of the two windows. The rate
+  error is 0.1 seconds, plus the rate times the time ranges of both thirds,
+  divided by the distance between the third medians. A reduced difference of
+  more than 0.1 seconds, and of more than six standard errors of the white
+  noise between adjacent observations, is a step. The standard-error term is
+  at most 0.15 seconds. Noise within ±0.05 seconds cannot cause a step. A single
+  outlier inside the interval is not a step. A deviating first or last
   observation is a step.
 - The GPS interval overlaps the track.
 - The estimated uncertainty is at most 2 seconds over the whole video timeline.

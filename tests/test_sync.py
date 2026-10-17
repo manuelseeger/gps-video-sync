@@ -303,3 +303,20 @@ def test_smooth_bounded_wander_is_not_a_step():
     result = _gps_case(t, 30010 + t + noise)
     assert result.method == "gps"
     assert abs(result.offset_seconds - 30010) <= result.uncertainty_seconds
+
+
+def test_irregular_sampling_with_bounded_noise_is_not_a_step():
+    t = np.arange(60.)
+    t[15:] += 5
+    noise = .049*np.sign(np.sin(np.linspace(0, 1.5*np.pi, 60) + 2.8))
+    result = _gps_case(t, 30010 + 1.0001*t + noise)
+    assert result.method == "gps"
+    assert abs(result.offset_seconds - 30010) <= result.uncertainty_seconds
+
+
+def test_plateau_under_alternating_jitter_is_rejected():
+    t = np.arange(100.)
+    utc = 30010 + t + .04*(-1.)**np.arange(100)
+    utc[50:55] += .3
+    result = _gps_case(t, utc)
+    assert result.method == "motion" and "step" in result.confidence["gps_rejected"]
