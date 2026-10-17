@@ -14,9 +14,12 @@ class IGCReader:
         last_clock = None
         rollover = 0
         for line in Path(path).read_text(errors="replace").splitlines():
-            match = re.match(r"H[FO]DTE(?:DATE:)?\s*(\d{6})", line)
+            match = re.match(r"H[FO]DTE\s*(?:DATE:)?\s*(\d{6})", line)
             if match and day is None:
-                day = datetime.strptime(match[1], "%d%m%y").date()
+                try:
+                    day = datetime.strptime(match[1], "%d%m%y").date()
+                except ValueError:
+                    pass
             if not line.startswith("B") or len(line) < 35:
                 continue
             try:
