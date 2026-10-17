@@ -48,10 +48,52 @@ median fix intervals unfilled. GPS course below 3 m/s is excluded.
 
 ## GoPro extraction
 
-The extractor accepts LRV and MP4 chapters in recording order. Chapter offsets
-use actual video-stream durations. An `ffprobe` call per chapter locates the
-`gpmd` stream and its packets. The extractor reads GPMF bytes from the media
-without changes to the source file.
+The extractor accepts LRV and MP4 chapters in recording order. The native MP4
+reader inspects `moov` sample tables without reading media payloads. It supports
+`stts`, `ctts`, `stsz`, `stz2`, `stsc`, `stco`, and `co64`. The extractor reads
+only the selected `gpmd` payloads at their validated positions inside `mdat`.
+The source file does not change. Extraction needs no external programs.
+
+Chapter duration uses the first positive value from the video edit-list total,
+known `mdhd` duration, `stts` duration total, or known `mvhd` duration.
+The edit-list total includes leading empty edits. All-ones header durations
+mean unknown. Chapter offsets use these durations in recording order.
+
+Sample times follow ISO edit mapping without a snap to packet boundaries:
+
+```text
+sample_time = leading_empty_seconds + (composition_ticks - media_time) / track_scale - video_origin
+```
+
+`ctts` version 0 offsets are unsigned. Version 1 offsets are signed.
+The video origin is zero with a populated video edit list. Otherwise it is
+the minimum video presentation time, or zero for an empty video table.
+All tracks use that common origin.
+
+The reader supports leading empty edits followed by one unit-rate media edit.
+It rejects multiple media edits, trailing empty edits, dwell edits, other rates,
+and fragmented MP4 files containing `moof` or `mvex`. GPMF edits that end before
+the video timeline are unsupported. A partial GPMF sample across a leading
+empty edit is also unsupported. Mixed sample descriptions and external media
+references are rejected. Ordinary audio, `tmcd`, and `fdsc` tracks are ignored.
+Self-contained URL and QuickTime alias data references are supported.
+
+A partial sample keeps its complete duration and can have a negative start.
+Observations retain their uniform positions in that original interval.
+The extractor then selects observations in `[0, chapter_duration)`.
+For example, a 1.001-second sample with media time 0.300 starts at -0.300.
+Four observations occur at -0.300, -0.04975, 0.2005, and 0.45075 seconds.
+Only the last two remain. This ISO rule places chapter-01 fixture GPMF samples
+0.701 seconds later than FFmpeg's packet-boundary edit rule. The bundled
+STMP camera-clock continuity test checks this rule across the chapter boundary.
+
+Chapter metadata `packets` counts returned GPMF samples, including partial
+boundary samples and samples outside the chapter observation interval.
+Samples that end at or before the media edit starts are omitted.
+The reader retains at most 64 MiB of metadata and visits at most 100000 boxes.
+It permits at most 128 tracks, 1024 edits per selected track, and 10000000
+samples across selected tracks. GPMF output is limited to 100000 samples with
+at most 16 MiB per payload. A limit violation raises `ValueError`.
 
 Available channels are `GYRO` in rad/s, `ACCL` in m/s², `GRAV` as native unit
 vectors, and `CORI` and `IORI` as native unit quaternions. Missing channels are
