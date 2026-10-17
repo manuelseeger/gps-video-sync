@@ -14,17 +14,16 @@ MAX_UNIX_SECONDS = 253370764800.
 GPS_STEP_SECONDS = .1
 
 
-GPS_STEP_WINDOW = 30
+GPS_STEP_WINDOWS = (3, 5, 10, 20, 30)
 
 
 def _gps_step(time, delta):
     """True when the clock offset changes abruptly between adjacent runs.
 
-    The offsets are detrended with a robust long-baseline rate. For each split,
-    the median of up to GPS_STEP_WINDOW observations before the split is
-    compared with the median of up to GPS_STEP_WINDOW observations after it.
-    The window is n/20 observations, at least 3 and at most GPS_STEP_WINDOW;
-    near the ends it shrinks to the available observations, down to one.
+    The offsets are detrended with a robust long-baseline rate. For each window
+    size in GPS_STEP_WINDOWS up to n/2 and each split, the median of the window
+    before the split is compared with the median of the window after it. Near
+    the ends a window shrinks to the available observations, down to one.
     A difference of more than GPS_STEP_SECONDS and more than six standard
     errors is a step. The standard error uses the white noise between adjacent
     observations. Observation noise within +-GPS_STEP_SECONDS/2 cannot make two
@@ -41,23 +40,23 @@ def _gps_step(time, delta):
     rate = (np.median(delta[-third:])-np.median(delta[:third]))/span if span > 0 else 0.
     level = delta-rate*time
     noise = 1.4826*float(np.median(abs(np.diff(level))))/np.sqrt(2)
-    window = int(np.clip(n//20, 3, GPS_STEP_WINDOW))
 
     def stepped(before, after, size_before, size_after):
         error = 1.25*noise*np.sqrt(1/size_before+1/size_after)
         return np.any(abs(after-before) > np.maximum(GPS_STEP_SECONDS, 6*error))
 
-    if n >= 2*window:
-        medians = np.median(np.lib.stride_tricks.sliding_window_view(level, window), axis=1)
-        if stepped(medians[:-window], medians[window:], window, window):
-            return True
-    for split in range(1, n):
-        if window <= split <= n-window:
-            continue
-        before = level[max(0, split-window):split]
-        after = level[split:split+window]
-        if stepped(np.median(before), np.median(after), len(before), len(after)):
-            return True
+    for window in [w for w in GPS_STEP_WINDOWS if w <= n//2] or [1]:
+        if n >= 2*window:
+            medians = np.median(np.lib.stride_tricks.sliding_window_view(level, window), axis=1)
+            if stepped(medians[:-window], medians[window:], window, window):
+                return True
+        for split in range(1, n):
+            if window <= split <= n-window:
+                continue
+            before = level[max(0, split-window):split]
+            after = level[split:split+window]
+            if stepped(np.median(before), np.median(after), len(before), len(after)):
+                return True
     return False
 
 

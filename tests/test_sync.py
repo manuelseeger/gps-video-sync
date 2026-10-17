@@ -287,3 +287,11 @@ def test_noisy_steps_and_plateaus_are_rejected(deviation):
     noise = np.random.default_rng(0).uniform(-.05, .05, 600)
     result = _gps_case(t, 30010 + t + deviation(t, noise))
     assert result.method == "motion" and "step" in result.confidence["gps_rejected"]
+
+
+def test_short_plateau_in_short_sequence_is_rejected():
+    t = np.arange(60.)
+    utc = 30010 + t + np.random.default_rng(636).uniform(-.05, .05, 60)
+    utc[30:35] += .3
+    result = _gps_case(t, utc)
+    assert result.method == "motion" and "step" in result.confidence["gps_rejected"]

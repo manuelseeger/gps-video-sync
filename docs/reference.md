@@ -205,16 +205,15 @@ these conditions are true:
   wrong UTC values.
 - The residual standard deviation is below 0.5 seconds.
 - No UTC step occurs. The check removes a robust long-baseline rate from the
-  offsets of all finite observations, before outlier removal. At each position,
-  it compares the median of the preceding window of observations with the
-  median of the following window. The window is one twentieth of the
-  observations, at least 3 and at most 30. Near the start and end, the window
-  shrinks to the available observations, down to one. A difference of more
-  than 0.1 seconds, and of more than six standard errors of the white noise
-  between adjacent observations, is a step. Noise within ±0.05 seconds cannot
-  cause a step. A single outlier inside the interval is not a step. A plateau
-  of three or more deviating observations is two steps. A deviating first or
-  last observation is a step.
+  offsets of all finite observations, before outlier removal. For window sizes
+  of 3, 5, 10, 20, and 30 observations, up to half the observations, and at each
+  position, it compares the median of the preceding window with the median of
+  the following window. Near the start and end, a window shrinks to the
+  available observations, down to one. A difference of more than 0.1 seconds,
+  and of more than six standard errors of the white noise between adjacent
+  observations, is a step. Noise within ±0.05 seconds cannot cause a step. A
+  single outlier inside the interval is not a step. A deviating first or last
+  observation is a step.
 - The GPS interval overlaps the track.
 - The estimated uncertainty is at most 2 seconds over the whole video timeline.
 
