@@ -1,7 +1,7 @@
 """GoPro motion and GPS UTC on the concatenated video timeline.
 
-ffprobe runs once per chapter. GPMF packets are read directly at their file
-positions. Motion retains native camera axes; GPS times are Unix UTC seconds.
+MP4 sample tables give GPMF timing and file positions. Motion retains native
+camera axes; GPS times are Unix UTC seconds.
 """
 from __future__ import annotations
 
@@ -11,7 +11,6 @@ import json
 import math
 import os
 from pathlib import Path
-import subprocess
 import tempfile
 from typing import Sequence
 import zipfile
@@ -19,83 +18,14 @@ import zipfile
 import numpy as np
 from scipy.ndimage import uniform_filter1d
 
+from . import mp4
 from .gpmf import number, scaled, streams
 from .models import Telemetry
 
 KEYS = ("ACCL", "GYRO", "GRAV", "CORI", "IORI")
 QUATERNIONS = ("CORI", "IORI")
-CACHE_VERSION = "1.0.1"
+CACHE_VERSION = "1.1.0"
 GPS_EPOCH = datetime(2000, 1, 1, tzinfo=timezone.utc).timestamp()
-
-
-def _probe(path: Path) -> dict:
-    try:
-        result = subprocess.run(
-            ["ffprobe", "-v", "error", "-show_streams", "-show_packets",
-             "-show_entries",
-             "stream=index,codec_type,codec_tag_string,codec_tag,duration,duration_ts,time_base,start_time:"
-             "packet=stream_index,pts_time,dts_time,duration_time,pos,size:format=duration",
-             "-show_format", "-of", "json", str(path)],
-            check=True, capture_output=True, text=True,
-        )
-        meta = json.loads(result.stdout)
-        if not isinstance(meta, dict):
-            raise ValueError("ffprobe did not return an object")
-        return meta
-    except FileNotFoundError as exc:
-        raise ValueError("GoPro extraction requires ffprobe") from exc
-    except (subprocess.CalledProcessError, json.JSONDecodeError) as exc:
-        raise ValueError(f"Cannot probe video {path.name}: invalid or truncated file") from exc
-
-
-def _float(value) -> float | None:
-    try:
-        result = float(value)
-        return result if math.isfinite(result) else None
-    except (ValueError, TypeError):
-        return None
-
-
-def _pts(packet: dict) -> float | None:
-    value = _float(packet.get("pts_time"))
-    return value if value is not None else _float(packet.get("dts_time"))
-
-
-def _video_timing(meta: dict) -> tuple[float, float]:
-    video = next((s for s in meta.get("streams", []) if s.get("codec_type") == "video"), None)
-    if video is None:
-        raise ValueError("GoPro chapter has no video stream")
-    packets = [p for p in meta.get("packets", [])
-               if p.get("stream_index") == video.get("index") and _pts(p) is not None]
-    start = _float(video.get("start_time"))
-    if start is None:
-        start = min((_pts(p) for p in packets), default=0.0)
-    duration = _float(video.get("duration"))
-    if duration is None and "duration_ts" in video and "time_base" in video:
-        try:
-            numerator, denominator = map(float, video["time_base"].split("/"))
-            duration = float(video["duration_ts"]) * numerator / denominator
-        except (ValueError, TypeError, ZeroDivisionError):
-            pass
-    if duration is None or duration <= 0 or not math.isfinite(duration):
-        # Use video packets, not the rounded metadata stream length.
-        ends = [_pts(p) + (_float(p.get("duration_time")) or 0.0) for p in packets]
-        duration = max(ends, default=start) - start
-        if duration <= 0:
-            duration = _float(meta.get("format", {}).get("duration"))
-    if duration is None or not math.isfinite(duration) or duration <= 0:
-        raise ValueError("Cannot determine video chapter duration")
-    return start, duration
-
-
-def _is_gpmd(stream: dict) -> bool:
-    if stream.get("codec_tag_string") == "gpmd":
-        return True
-    try:
-        tag = stream.get("codec_tag", "")
-        return (int(tag, 0) if isinstance(tag, str) else int(tag)) == 0x646D7067
-    except (ValueError, TypeError):
-        return False
 
 
 def _gps(fields: dict, times: np.ndarray, key: str) -> tuple[np.ndarray, np.ndarray]:
@@ -131,34 +61,16 @@ def _gps(fields: dict, times: np.ndarray, key: str) -> tuple[np.ndarray, np.ndar
 
 
 def _chapter(path: Path, base: float) -> tuple[dict, dict, list, list]:
-    meta = _probe(path)
-    start, duration = _video_timing(meta)
-    indices = {s["index"] for s in meta.get("streams", []) if _is_gpmd(s) and "index" in s}
-    packets = [p for p in meta.get("packets", []) if p.get("stream_index") in indices]
-    if any(_pts(p) is None for p in packets):
-        raise ValueError("GPMF packet has no timestamp")
-    packets.sort(key=_pts)
+    timeline = mp4.read_timeline(path)
+    duration = timeline.duration
     data = {key: [] for key in KEYS}
     gps5, gps9 = [], []
-    file_size = path.stat().st_size
     with path.open("rb") as handle:
-        for i, packet in enumerate(packets):
-            pts = _pts(packet) - start
-            interval = _float(packet.get("duration_time"))
-            if interval is None or interval <= 0:
-                next_pts = _pts(packets[i + 1]) - start if i + 1 < len(packets) else duration
-                interval = next_pts - pts
-            if interval <= 0:
-                raise ValueError("GPMF packet has no positive duration")
-            try:
-                pos, size = int(packet["pos"]), int(packet["size"])
-            except (KeyError, ValueError, TypeError) as exc:
-                raise ValueError("GPMF packet has no valid file position or size") from exc
-            if pos < 0 or size <= 0 or pos + size > file_size:
-                raise ValueError("Truncated GPMF packet in video file")
-            handle.seek(pos)
-            buf = handle.read(size)
-            if len(buf) != size:
+        for sample in timeline.samples:
+            pts, interval = sample.time, sample.duration
+            handle.seek(sample.offset)
+            buf = handle.read(sample.size)
+            if len(buf) != sample.size:
                 raise ValueError("Truncated GPMF packet in video file")
             packet_gps5, packet_gps9 = [], []
             has_gps9 = False
@@ -193,7 +105,7 @@ def _chapter(path: Path, base: float) -> tuple[dict, dict, list, list]:
                 gps9.extend(packet_gps9)
             else:
                 gps5.extend(packet_gps5)
-    chapter = {"file": str(path), "start": base, "duration": duration, "packets": len(packets)}
+    chapter = {"file": str(path), "start": base, "duration": duration, "packets": len(timeline.samples)}
     return chapter, data, gps5, gps9
 
 

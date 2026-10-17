@@ -12,10 +12,8 @@ Requires Python 3.10 or later. From the repository root:
 pip install .
 ```
 
-GoPro video input requires [ffprobe](https://ffmpeg.org/ffprobe.html) at runtime.
-Install it through your operating system's FFmpeg package and make sure that
-`ffprobe` is on `PATH`. The Python package does not install it. Core matching
-with existing telemetry or NPZ input does not require `ffprobe`.
+GoPro MP4 and LRV extraction uses only the package's Python dependencies.
+The native reader gets timing and file positions from MP4 sample tables.
 
 To create verification plots, install `'.[verify]'`. Frame extraction also
 requires `ffmpeg` on `PATH`.
@@ -76,9 +74,10 @@ pip install -e '.[dev,verify]'
 python -m pytest
 ```
 
-The integration tests use [bundled fixtures](tests/fixtures/README.md).
-They require `ffprobe`. Frame tests also require `ffmpeg` and Matplotlib.
-To run only unit tests, use `python -m pytest -m 'not integration'`.
+The integration tests use [bundled fixtures](tests/fixtures/).
+Extraction and alignment tests need no external programs. Optional parity tests
+use `ffprobe` and have the `ffprobe` marker. Frame tests require `ffmpeg` and
+Matplotlib. To run only unit tests, use `python -m pytest -m 'not integration'`.
 
 ## License
 
