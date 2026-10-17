@@ -200,21 +200,27 @@ these conditions are true:
 - The fitted clock rate is within 0.002 of 1 (7.2 seconds per hour). This is
   more than ten times the usual tolerance of camera clock crystals. Larger rates
   come from frozen, stepped, or wrong UTC values.
-- The residual standard deviation is below 0.5 seconds, and no residual changes
-  by more than 0.5 seconds between consecutive observations (no UTC step).
+- The residual standard deviation is below 0.5 seconds.
+- No UTC step occurs. A step is a change of more than 0.1 seconds between the
+  median detrended offsets of two adjacent runs of observations. Each run has 10%
+  of the observations, with a minimum of 3 and a maximum of 30. The check uses all
+  finite observations before outlier removal. Single outliers are not steps.
 - The GPS interval overlaps the track.
 - The estimated uncertainty is at most 2 seconds over the whole video timeline.
 
-GPS UTC values outside the years 1970 to 9999 are ignored. The fitted clock rate
+GPS UTC values outside the years 1970 to 9998 are ignored. The fitted clock rate
 is used when it is significant and changes the mapping by more than 0.5 seconds
-between the start of the video timeline and the last GPS observation. Otherwise
-`clockRate` is 1 and the offset is the median at the GPS observations. The
-uncertainty then includes the possible rate error extrapolated to the video
-start and end.
+over the combined interval of the video timeline and the GPS observations.
+Otherwise `clockRate` is 1 and the offset is the median at the GPS observations.
+The uncertainty includes the possible rate error extrapolated to the video start
+and end. It also includes the rate bias that an undetected step of up to 0.1
+seconds can cause. Therefore a short GPS interval far from the video start does
+not give a GPS result.
 
 When GPS time is present but unusable, `confidence.gps_rejected` gives the
 reason. A motion result that is not accepted also states that reason in
 `message`.
+
 Filtering operates on separate valid runs. Search uses masked, normalized FFT
 correlations, then local 0.1-second refinement.
 

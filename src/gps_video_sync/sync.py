@@ -10,7 +10,24 @@ from .models import Track, Telemetry, SyncResult
 MIN_GPS_SPAN_SECONDS = 10.
 MAX_GPS_RATE_ERROR = 2e-3
 MAX_GPS_UNCERTAINTY_SECONDS = 2.
-MAX_UNIX_SECONDS = 253402300800.
+MAX_UNIX_SECONDS = 253370764800.
+GPS_STEP_SECONDS = .1
+
+
+def _gps_step(time, delta):
+    """True when the median clock offset changes by more than GPS_STEP_SECONDS
+    between adjacent runs of observations. Single outliers do not count."""
+    order = np.argsort(time, kind="stable")
+    time, delta = time[order], delta[order]
+    k = max(3, min(30, len(time)//10))
+    if len(time) < 2*k:
+        return False
+    steps = np.diff(time)
+    rates = np.diff(delta)[steps > 0]/steps[steps > 0]
+    level = delta - (float(np.median(rates)) if len(rates) else 0.)*time
+    windows = np.lib.stride_tricks.sliding_window_view(level, k)
+    medians = np.median(windows, axis=1)
+    return bool(np.any(abs(medians[k:]-medians[:-k]) > GPS_STEP_SECONDS))
 
 
 def _grid(time, values, grid, max_gap=None):
@@ -255,6 +272,7 @@ def synchronize(track: Track, telemetry: Telemetry) -> SyncResult:
         midnight = datetime.combine(origin_date, datetime.min.time(), timezone.utc).timestamp()
         delta = telemetry.gps_utc-midnight-telemetry.gps_time
         valid = finite_gps & np.isfinite(delta)
+        stepped = _gps_step(telemetry.gps_time[valid], delta[valid])
         if valid.sum() >= 3:
             x, y = telemetry.gps_time[valid], delta[valid]
             order = np.argsort(x)
@@ -272,7 +290,9 @@ def synchronize(track: Track, telemetry: Telemetry) -> SyncResult:
         order = np.argsort(gt, kind="stable")
         gt, gu = gt[order], gu[order]
         fit = linregress(gt, gu) if len(gt) >= 3 and np.ptp(gt) > 0 else None
-        if valid.sum() < 3 or inlier_fraction < .8:
+        if stepped:
+            gps_rejection = f"GPS UTC has a step of more than {GPS_STEP_SECONDS:g} s"
+        elif valid.sum() < 3 or inlier_fraction < .8:
             gps_rejection = "GPS UTC observations are inconsistent"
         elif np.ptp(gt) < MIN_GPS_SPAN_SECONDS:
             gps_rejection = f"GPS UTC observations span less than {MIN_GPS_SPAN_SECONDS:g} s"
@@ -295,11 +315,11 @@ def synchronize(track: Track, telemetry: Telemetry) -> SyncResult:
                 offset = float(np.median(gu-gt))
                 center = float(np.mean(gt))
                 reach = (rate_error + 3*float(fit.stderr))*max(center-first, last-center)
+            # An undetected step below GPS_STEP_SECONDS can bias the fitted rate.
+            reach += 1.5*GPS_STEP_SECONDS*max(abs(first), abs(last), last-first)/float(np.ptp(gt))
             uncertainty = max(.5, scatter*3, reach)
             if scatter >= .5:
                 gps_rejection = "GPS UTC residuals exceed 0.5 s"
-            elif np.any(abs(np.diff(residual)) > .5):
-                gps_rejection = "GPS UTC has a step of more than 0.5 s"
             elif overlap < 0:
                 gps_rejection = "GPS UTC does not overlap the track"
             elif uncertainty > MAX_GPS_UNCERTAINTY_SECONDS:

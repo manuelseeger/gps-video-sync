@@ -166,7 +166,7 @@ def _gps_case(gps_time, gps_utc):
     (np.arange(60.), np.full(60, 30010.), "increase"),
     (np.arange(60.), 30070 - np.arange(60.), "increase"),
     (np.arange(60.), 30010 + 6 * np.arange(60.), "rate"),
-    (np.arange(600.), 30010 + np.arange(600.) + np.r_[np.zeros(300), np.ones(300)], "rate"),
+    (np.arange(600.), 30010 + np.arange(600.) + np.r_[np.zeros(300), np.ones(300)], "step"),
     (np.arange(600.), 30010 + np.arange(600.) + np.r_[np.zeros(300), np.full(300, 20.)], "GPS UTC"),
 ])
 def test_gps_rejects_unusable_clock_mapping(gps_time, gps_utc, reason):
@@ -196,28 +196,41 @@ def test_track_without_whole_second_grid_is_ambiguous():
 
 def test_gps_far_from_video_start_uses_rate_or_rejects():
     gt = 10000 + np.arange(12.)
-    result = _gps_case(gt, 30010 + 1.001 * gt)
-    assert result.method == "gps" and result.drift["detected"]
-    assert result.offset_seconds == pytest.approx(30010, abs=.01)
-    noise = np.random.default_rng(4).normal(scale=.005, size=12)
-    result = _gps_case(gt, 30010 + 1.001 * gt + noise)
-    assert result.method == "motion" and result.offset_seconds is None
-    assert "constrain" in result.confidence["gps_rejected"]
+    for noise in (0, np.random.default_rng(4).normal(scale=.005, size=12)):
+        result = _gps_case(gt, 30010 + 1.001 * gt + noise)
+        assert result.method == "motion" and result.offset_seconds is None
+        assert "constrain" in result.confidence["gps_rejected"]
     gt = 10000 + np.arange(0., 3600.)
     result = _gps_case(gt, 30010 + 1.001 * gt)
     assert result.method == "gps" and result.drift["detected"]
     assert result.offset_seconds == pytest.approx(30010, abs=.01)
+    assert result.uncertainty_seconds <= 2
 
 
-def test_gps_long_utc_step_is_rejected():
-    gt = np.arange(1000.)
-    result = _gps_case(gt, 30010 + gt + np.r_[np.zeros(500), np.ones(500)])
+@pytest.mark.parametrize("start", [0, 10000])
+@pytest.mark.parametrize("at,size", [(500, 1), (100, 1), (900, 1), (500, .2), (40, .3), (960, -.3)])
+@pytest.mark.parametrize("noise", [0, .02])
+def test_gps_utc_steps_are_rejected(start, at, size, noise):
+    gt = start + np.arange(1000.)
+    jitter = np.random.default_rng(at).normal(scale=noise, size=1000)
+    result = _gps_case(gt, 30010 + gt + np.r_[np.zeros(at), np.full(1000 - at, size)] + jitter)
     assert result.method == "motion" and result.offset_seconds is None
     assert "step" in result.confidence["gps_rejected"]
+
+
+@pytest.mark.parametrize("start", [0, 300])
+def test_gps_single_outliers_are_not_steps(start):
+    gt = start + np.arange(1000.)
+    utc = 30010 + gt + np.random.default_rng(9).normal(scale=.02, size=1000)
+    utc[[50, 400, 950]] += 3
+    result = _gps_case(gt, utc)
+    assert result.method == "gps"
+    assert result.offset_seconds == pytest.approx(30010, abs=.05)
 
 
 def test_gps_out_of_range_utc_without_track_date():
     track = Track(np.arange(30000., 32000.), np.ones(2000), np.ones(2000), np.ones(2000))
     gt = np.arange(60.)
-    result = synchronize(track, Telemetry(gt, {}, gps_time=gt, gps_utc=np.full(60, 1e20)))
-    assert result.status == "ambiguous" and result.offset_seconds is None
+    for stamp in (1e20, 253402214400., 253370764799.):
+        result = synchronize(track, Telemetry(gt, {}, gps_time=gt, gps_utc=stamp + gt))
+        assert result.status == "ambiguous" and result.offset_seconds is None
