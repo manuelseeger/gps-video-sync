@@ -86,7 +86,7 @@ The integration tests use [bundled fixtures](https://github.com/manuelseeger/gps
 The fixtures contain flight coordinates, times, and media. Release archives
 exclude tests and fixtures. Run the full test suite from a repository checkout.
 Extraction and alignment tests need no external programs. Optional parity tests
-use `ffprobe` and have the `ffprobe` marker. Frame tests require `ffmpeg` and
+use `ffprobe` 9 or later and have the `ffprobe` marker. Frame tests require `ffmpeg` and
 Matplotlib. To run only unit tests, use `python -m pytest -m 'not integration'`.
 
 ## Releases

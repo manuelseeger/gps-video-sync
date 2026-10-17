@@ -58,8 +58,9 @@ uv run --python 3.10 --extra dev --extra verify pytest -q
 uv run --python 3.15 --extra dev --extra verify pytest -q
 ```
 
-The full suite needs the tracked `tests/fixtures` files, `ffmpeg`, `ffprobe`
-(for the parity tests), and Matplotlib. Do not treat skipped integration tests as release validation.
+The full suite needs the tracked `tests/fixtures` files, `ffmpeg`, and Matplotlib.
+The optional parity tests need `ffprobe` 9 or later and skip with older versions.
+Do not treat other skipped integration tests as release validation.
 The real-flight fixtures contain coordinates, flight times, and media. They
 are for repository tests and are excluded from release archives.
 
@@ -102,8 +103,8 @@ A separate `metadata` job downloads that artifact and runs `twine check --strict
 The `smoke` jobs download the same artifact, build a wheel from its source
 archive, and test installed wheels on Python 3.10 and 3.15. These tests include
 the `verify` extra, real GoPro extraction, and motion matching with the fixtures.
-The test and smoke jobs install FFmpeg for frame extraction. The test job can
-also use its `ffprobe` executable for optional parity tests. Package execution
+The test and smoke jobs install FFmpeg for frame extraction. The distribution FFmpeg on the CI runner is older than
+version 9, so CI skips the optional parity tests. Package execution
 does not need `ffprobe`. The Python 3.10 test job checks the lowest direct
 dependency versions.
 

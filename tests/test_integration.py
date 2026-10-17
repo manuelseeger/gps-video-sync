@@ -16,6 +16,7 @@ from gps_video_sync.gpmf import number, streams
 pytestmark = pytest.mark.integration
 FIXTURES = Path(__file__).parent / "fixtures"
 EXPECTED_OFFSET = 36160.112
+FFPROBE_PARITY_MAJOR = 9
 
 
 @pytest.fixture(scope="module")
@@ -60,6 +61,10 @@ def test_exact_chapter_timeline(flight):
 def test_ffprobe_parity(chapter):
     if not shutil.which("ffprobe"):
         pytest.skip("optional parity requires ffprobe")
+    version = subprocess.run(["ffprobe", "-version"], capture_output=True, text=True).stdout
+    major = re.match(r"ffprobe version n?(\d+)\.", version)
+    if not major or int(major[1]) < FFPROBE_PARITY_MAJOR:
+        pytest.skip(f"parity values are verified with FFmpeg {FFPROBE_PARITY_MAJOR} or later")
     path = FIXTURES / f"chapter-{chapter:02}.mp4"
     probe = json.loads(subprocess.run(
         ["ffprobe", "-v", "error", "-show_streams", "-show_packets", "-of", "json", str(path)],
