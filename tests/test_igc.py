@@ -12,7 +12,7 @@ def test_header_midnight_invalid_gaps(tmp_path):
     path = tmp_path / "track.igc"
     path.write_text("HFDTE161026\n" + "\n".join([
         fix("235957"), fix("235959", "V"), fix("000001", gps=710),
-        fix("000003", gps=712), fix("000003"), fix("000002"), fix("000030", gps=720)]))
+        fix("000003", gps=712), fix("000003"), fix("000002"), fix("235958"), fix("000030", gps=720)]))
     track = IGCReader().read(path)
     assert track.date == date(2026, 10, 16)
     np.testing.assert_equal(track.time, [86397, 86401, 86403, 86430])

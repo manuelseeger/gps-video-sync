@@ -287,7 +287,7 @@ def test_cache_roundtrip_all_fields_and_default_location(tmp_path, monkeypatch):
     os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1))
     source.read([path], hz=4)
     assert len(calls) == 4
-    monkeypatch.setattr(gopro, "CACHE_VERSION", "1.0.1")
+    monkeypatch.setattr(gopro, "CACHE_VERSION", "1.0.2")
     source.read([path], hz=4)
     assert len(calls) == 5
 
@@ -322,6 +322,15 @@ def test_quaternion_continuity_across_chapters_and_low_hz(tmp_path, monkeypatch)
 def test_invalid_hz(hz):
     with pytest.raises(ValueError, match="hz"):
         GoProSource().read(["unused.mp4"], hz=hz)
+
+
+def test_resample_sensor_gap_is_nan():
+    blocks = [np.column_stack((np.arange(0, 1, .1), np.ones((10, 3)))),
+              np.column_stack((np.arange(3, 4, .1), np.ones((10, 3))))]
+    grid = np.arange(0, 4, .1)
+    values = gopro._resample(blocks, grid, "GYRO", 10)
+    assert np.isnan(values[11:30]).all()
+    assert np.isfinite(values[:9]).all()
 
 
 def test_invalid_paths_and_missing_video(tmp_path, monkeypatch):

@@ -1,4 +1,4 @@
-"""Optional raw-signal alignment plot and chapter-aware frame extraction."""
+"""Optional aligned-feature plots and chapter-aware frame extraction."""
 from pathlib import Path
 import subprocess
 
@@ -35,7 +35,7 @@ def _chapter_frame(telemetry, videos, seconds):
 
 
 def plot_verification(track, telemetry, result, output, frames=(), videos=()):
-    """Plot raw signals, not matcher scores. Frames are separate sibling PNGs."""
+    """Compare normalized matching features. Frames are separate sibling PNGs."""
     try:
         import matplotlib
         matplotlib.use("Agg")
@@ -56,25 +56,51 @@ def plot_verification(track, telemetry, result, output, frames=(), videos=()):
     output = Path(output)
     if output.suffix.lower() != ".png":
         raise ValueError("--output must end in .png")
-    fig, axes = plt.subplots(2, 1, sharex=True, figsize=(12, 7))
+    from .sync import build_features
+    common = []
+    if "ACCL" in telemetry.channels or "GYRO" in telemetry.channels:
+        utc, time, track_features, video_features = build_features(track, telemetry)
+        common = sorted(track_features.keys() & video_features.keys())
+    fig, axes = plt.subplots(max(2, len(common)), 1, sharex=True, figsize=(12, 3*max(2, len(common))))
     try:
-        axes[0].plot(track.time / 3600, track.altitude, label=f"Track altitude ({track.altitude_source})")
-        axes[0].set_ylabel("Altitude (m)")
-        axes[0].legend()
-        mapped = (telemetry.time * rate + offset) / 3600
-        for name, values in telemetry.channels.items():
-            values = np.asarray(values)
-            if values.ndim == 1:
-                axes[1].plot(mapped, values, label=name)
-            elif values.ndim == 2:
-                axes[1].plot(mapped, np.linalg.norm(values, axis=1), label=f"{name} norm")
-        axes[1].set_ylabel("Raw telemetry (source units)")
-        axes[1].set_xlabel("UTC hours from track date midnight (may exceed 24)")
-        if axes[1].lines:
-            axes[1].legend()
+        if common:
+            def normalized(a):
+                finite = np.isfinite(a)
+                if not finite.any():
+                    return a
+                return (a-np.nanmean(a))/max(float(np.nanstd(a)), 1e-12)
+            for ax, key in zip(axes, common):
+                a, b = normalized(track_features[key]), normalized(video_features[key])
+                mapped_time = time*rate+offset
+                overlap = np.isfinite(a) & (utc >= mapped_time[0]) & (utc <= mapped_time[-1])
+                # Signed yaw is mount dependent; show the matching sign.
+                if key == "yaw" and overlap.sum() > 2:
+                    vb = np.interp(utc[overlap], mapped_time, b)
+                    good = np.isfinite(vb)
+                    if good.sum() > 2 and np.sum(a[overlap][good]*vb[good]) < 0:
+                        b = -b
+                ax.plot(utc/3600, a, label=f"track {key}")
+                ax.plot(mapped_time/3600, b, alpha=.7, label=f"video {key}")
+                ax.set_ylabel("Standard deviations")
+                ax.legend()
+        else:
+            axes[0].plot(track.time / 3600, track.altitude, label=f"Track altitude ({track.altitude_source})")
+            axes[0].set_ylabel("Altitude (m)")
+            axes[0].legend()
+            mapped = (telemetry.time * rate + offset) / 3600
+            for name, values in telemetry.channels.items():
+                values = np.asarray(values)
+                if values.ndim == 1:
+                    axes[1].plot(mapped, values, label=name)
+                elif values.ndim == 2:
+                    axes[1].plot(mapped, np.linalg.norm(values, axis=1), label=f"{name} norm")
+            axes[1].set_ylabel("Raw telemetry (source units)")
+            if axes[1].lines:
+                axes[1].legend()
+        axes[-1].set_xlabel("UTC hours from track date midnight (may exceed 24)")
         for ax in axes:
             ax.grid(alpha=0.3)
-        fig.suptitle(f"Raw alignment check — {result.get('status', 'unknown')}; offset {offset:.3f} s")
+        fig.suptitle(f"Alignment check — {result.get('status', 'unknown')}; offset {offset:.3f} s")
         fig.tight_layout()
         fig.savefig(output)
     finally:

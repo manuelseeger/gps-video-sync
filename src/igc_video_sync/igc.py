@@ -28,6 +28,9 @@ class IGCReader:
                     continue
                 clock = h * 3600 + m * 60 + s
                 # Only a large reverse jump is a midnight, not out-of-order data.
+                if last_clock is not None and rollover and clock > last_clock + 43200:
+                    # A late packet from the previous day is not another day.
+                    continue
                 if last_clock is not None and clock < last_clock - 43200:
                     rollover += 86400
                 last_clock = clock

@@ -24,7 +24,7 @@ from .models import Telemetry
 
 KEYS = ("ACCL", "GYRO", "GRAV", "CORI", "IORI")
 QUATERNIONS = ("CORI", "IORI")
-CACHE_VERSION = "1.0.0"
+CACHE_VERSION = "1.0.1"
 GPS_EPOCH = datetime(2000, 1, 1, tzinfo=timezone.utc).timestamp()
 
 
@@ -219,6 +219,12 @@ def _resample(blocks: list, grid: np.ndarray, key: str, hz: float) -> np.ndarray
     result = np.column_stack([np.interp(grid, raw[:, 0], raw[:, i]) for i in range(1, raw.shape[1])])
     if key in QUATERNIONS:
         result /= np.linalg.norm(result, axis=1)[:, None]
+    if len(raw) > 1:
+        step = float(np.median(np.diff(raw[:, 0])))
+        right = np.searchsorted(raw[:, 0], grid).clip(1, len(raw)-1)
+        gap = (raw[right, 0]-raw[right-1, 0]) > max(.5, 3*step)
+        outside = (grid < raw[0, 0]) | (grid > raw[-1, 0]+step)
+        result[gap | outside] = np.nan
     return result
 
 

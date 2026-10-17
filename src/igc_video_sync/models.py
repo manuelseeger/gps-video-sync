@@ -44,18 +44,24 @@ class SyncResult:
     date: date | None = None
     message: str = ""
 
+    @property
+    def video_start_utc(self) -> str | None:
+        """ISO UTC start, or None if date/alignment is not established."""
+        if self.date is None or self.offset_seconds is None:
+            return None
+        return (datetime.combine(self.date, datetime.min.time(), timezone.utc)
+                + timedelta(seconds=self.offset_seconds)).isoformat()
+
     def to_dict(self) -> dict[str, Any]:
         obj = asdict(self)
         obj.pop("date")
-        iso = None
-        if self.date is not None and self.offset_seconds is not None:
-            iso = (datetime.combine(self.date, datetime.min.time(), timezone.utc)
-                   + timedelta(seconds=self.offset_seconds)).isoformat()
+        iso = self.video_start_utc
         rate = self.drift.get("clock_rate", 1.0)
         obj.update(schema_version="1.0.0", mapping="utc_seconds = video_seconds * clockRate + offset_seconds",
                    video_start_utc=iso, videoStartUtcSeconds=self.offset_seconds,
                    videoStartUtc=iso.split("T")[1].replace("+00:00", "") if iso else None,
                    dateUtc=iso[:10] if iso else (self.date.isoformat() if self.date else None),
+                   utc_origin_date=self.date.isoformat() if self.date else None,
                    clockDriftDetected=self.drift.get("detected", False), clockRate=rate,
                    estimatedAbsoluteUncertaintySeconds=self.uncertainty_seconds)
         return obj

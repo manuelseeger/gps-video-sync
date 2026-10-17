@@ -40,6 +40,10 @@ def read_npz(path):
         for key, values in channels.items():
             if values.ndim == 0 or len(values) != len(time):
                 raise ValueError(f"NPZ channel {key!r} must match time length")
+            if key in {"GYRO", "ACCL", "GRAV", "CORI", "IORI"}:
+                width = 4 if key in {"CORI", "IORI"} else 3
+                if values.shape != (len(time), width):
+                    raise ValueError(f"NPZ channel {key!r} must have shape (samples, {width})")
         gps_time = np.asarray(data["gps_time"], dtype=float) if "gps_time" in data else np.empty(0)
         gps_utc = np.asarray(data["gps_utc"], dtype=float) if "gps_utc" in data else np.empty(0)
         if gps_time.ndim != 1 or gps_utc.shape != gps_time.shape:
@@ -75,15 +79,25 @@ def _export(telemetry, path):
                             chapters=json.dumps(telemetry.chapters, default=_json_default),
                             schema_version="1.0.0")
     elif Path(path).suffix.lower() == ".json":
-        write_json(path, dict(schema_version="1.0.0", time=telemetry.time,
-                             channels=telemetry.channels, chapters=telemetry.chapters,
-                             gps_time=telemetry.gps_time, gps_utc=telemetry.gps_utc))
+        def nullable(values):
+            values = np.asarray(values)
+            return np.where(np.isfinite(values), values, None).tolist()
+        write_json(path, dict(schema_version="1.0.0", time=nullable(telemetry.time),
+                             channels={k: nullable(v) for k, v in telemetry.channels.items()},
+                             chapters=telemetry.chapters, gps_time=nullable(telemetry.gps_time),
+                             gps_utc=nullable(telemetry.gps_utc)))
     else:
         raise ValueError("--out must end in .npz or .json")
 
 
+class _Parser(argparse.ArgumentParser):
+    def error(self, message):
+        self.print_usage(sys.stderr)
+        self.exit(1, f"{self.prog}: error: {message}\n")
+
+
 def _parser():
-    parser = argparse.ArgumentParser(description="Synchronize video telemetry with a GPS track")
+    parser = _Parser(description="Synchronize video telemetry with a GPS track")
     parser.add_argument("--version", action="version", version=__version__)
     commands = parser.add_subparsers(dest="command", required=True)
     for command in ("sync", "telemetry", "verify", "info"):
@@ -97,7 +111,7 @@ def _parser():
             sub.add_argument("--track-format", default="igc")
             sub.add_argument("--altitude", choices=("auto", "gps", "pressure"), default="auto")
         if command == "sync":
-            sub.add_argument("--json", required=True, type=Path)
+            sub.add_argument("--json", type=Path, help="write result here instead of stdout")
         elif command == "telemetry":
             sub.add_argument("--out", required=True, type=Path)
         elif command == "verify":
@@ -133,14 +147,17 @@ def main(argv=None):
         if not isinstance(result, dict):
             raise ValueError("Sync result must be a JSON object")
         if args.command == "sync":
-            write_json(args.json, result)
-        else:
+            if args.json:
+                write_json(args.json, result)
+            else:
+                print(json.dumps(result, indent=2, default=_json_default, allow_nan=False))
+        elif result.get("status") == "ok":
             from .verify import plot_verification
             plot_verification(track, telemetry, result, args.output, args.frames or [], args.videos)
         if result.get("status") == "ambiguous":
             print("ambiguous: " + (result.get("message") or "No unique alignment; inspect confidence."), file=sys.stderr)
             return 2
-        if result.get("status") not in {"ok", "success"}:
+        if result.get("status") != "ok":
             print("error: " + (result.get("message") or str(result.get("status"))), file=sys.stderr)
             return 1
         return 0

@@ -3,11 +3,11 @@
 All filters are zero phase. Motion proxy correlations are not sensor identities.
 """
 from __future__ import annotations
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import numpy as np
 from scipy.ndimage import gaussian_filter1d as gf
 from scipy.signal import correlate, correlation_lags
-from scipy.stats import linregress
+from scipy.stats import linregress, theilslopes
 from .models import Track, Telemetry, SyncResult
 
 
@@ -67,19 +67,20 @@ def build_features(track: Track, telemetry: Telemetry):
     channels = telemetry.channels
     if "GYRO" in channels:
         gyro = channels["GYRO"]
-        vf["gyro_norm"] = _grid(telemetry.time, gf(np.linalg.norm(gyro, axis=1), 2/dt), t)
+        vf["gyro_norm"] = _grid(telemetry.time, gf(np.linalg.norm(gyro, axis=1), 2/dt, mode="nearest"), t)
         if "ACCL" in channels:
-            gravity = gf(channels["ACCL"], 2/dt, axis=0)
+            gravity = gf(channels["ACCL"], 2/dt, axis=0, mode="nearest")
             gravity /= np.maximum(np.linalg.norm(gravity, axis=1)[:, None], 1e-12)
-            vf["yaw"] = _grid(telemetry.time, gf(np.sum(gyro*gravity, axis=1), 2/dt), t)
+            vf["yaw"] = _grid(telemetry.time, gf(np.sum(gyro*gravity, axis=1), 2/dt, mode="nearest"), t)
     if "ACCL" in channels:
         norm = np.linalg.norm(channels["ACCL"], axis=1)
-        vf["gload"] = _grid(telemetry.time, gf(norm, 3/dt), t)
-        vf["vertical"] = _grid(telemetry.time, gf(norm, 1/dt)-gf(norm, 15/dt), t)
+        vf["gload"] = _grid(telemetry.time, gf(norm, 3/dt, mode="nearest"), t)
+        vf["vertical"] = _grid(telemetry.time, gf(norm, 1/dt, mode="nearest")-gf(norm, 15/dt, mode="nearest"), t)
     # Avoid filter transients at clip boundaries.
-    for a in vf.values():
-        a[:5] = np.nan
-        a[-5:] = np.nan
+    for key, a in vf.items():
+        edge = 30 if key == "vertical" else 6
+        a[:edge] = np.nan
+        a[-edge:] = np.nan
     return utc, t, tf, vf
 
 
@@ -160,17 +161,27 @@ def match_features(utc, t, track_features, video_features, *, exclusion_seconds=
     refine = "vertical" if "vertical" in curves and curves["vertical"][i] > .35 else ("yaw" if "yaw" in curves else max(curves, key=lambda k: weights.get(k, 1)))
     fine = np.arange(candidate-3, candidate+3.001, .1)
     scores = _local_scores(utc, t, track_features[refine], video_features[refine], fine, refine == "yaw")
+    boundary = False
     if np.isfinite(scores).any():
-        candidate = float(fine[np.nanargmax(scores)])
+        index = int(np.nanargmax(scores))
+        candidate = round(float(fine[index]), 3)
+        boundary = index in (0, len(fine)-1)
     agree = 0
+    agreeing_groups = set()
     for key, row in details.items():
         row["agreement_seconds"] = row["offset_seconds"]-candidate
         row["agrees"] = abs(row["agreement_seconds"]) <= 8
-        agree += row["agrees"] and row["score"] > .3
+        supports = row["agrees"] and row["score"] > .3
+        agree += supports
+        if supports:
+            agreeing_groups.add("turn" if key in {"yaw", "gyro_norm", "gload"} else key)
     confidence["agreeing_features"] = int(agree)
+    confidence["agreeing_groups"] = sorted(agreeing_groups)
+    confidence["fine_refinement_at_boundary"] = boundary
     confidence["refinement_feature"] = refine
     # Strong lone features are accepted only with a much larger unique margin.
-    accepted = best >= .38 and margin >= .08 and ratio >= 1.2 and (agree >= 2 or (best > .7 and margin > .25))
+    accepted = (not boundary and best >= .38 and margin >= .08 and ratio >= 1.2
+                and (len(agreeing_groups) >= 2 or (best > .7 and margin > .25)))
     return SyncResult("ok" if accepted else "ambiguous", candidate if accepted else None,
                       2. if accepted else None, confidence=confidence, per_feature=details,
                       message="" if accepted else "Weak or competing correlation peaks")
@@ -179,54 +190,111 @@ def match_features(utc, t, track_features, video_features, *, exclusion_seconds=
 def estimate_drift(utc, t, a, b, offset, *, absolute=False, window_seconds=400, search_seconds=8):
     """Independent local window offsets and regression; return clock rate + stderr."""
     windows = []
-    offsets = np.arange(offset-search_seconds, offset+search_seconds+.01, .1)
+    search_seconds = max(search_seconds, .01*(t[-1]-t[0]))
     for start in np.arange(t[0], t[-1]-window_seconds+1, window_seconds):
         use = (t >= start) & (t < start+window_seconds)
+        lags, coarse, _ = correlation_curve(a, b[use], min_samples=window_seconds*.65)
+        candidates = utc[0]-t[use][0]+lags
+        if absolute:
+            coarse = abs(coarse)
+        allowed = (abs(candidates-offset) <= search_seconds) & np.isfinite(coarse)
+        if not allowed.any():
+            continue
+        peak = float(candidates[np.nanargmax(np.where(allowed, coarse, np.nan))])
+        offsets = np.arange(peak-1.5, peak+1.501, .1)
         scores = _local_scores(utc, t[use], a, b[use], offsets, absolute, minimum=window_seconds*.65)
         if not np.isfinite(scores).any():
             continue
         i = int(np.nanargmax(scores))
-        if i in (0, len(offsets)-1) or scores[i] < .35:
+        if i in (0, len(offsets)-1) or scores[i] < .35 or abs(offsets[i]-offset) >= search_seconds-.2:
             continue
         windows.append({"video_midpoint": float(start+window_seconds/2),
-                        "offset_seconds": float(offsets[i]), "score": float(scores[i])})
+                        "offset_seconds": round(float(offsets[i]), 3), "score": float(scores[i])})
     obj = {"detected": False, "clock_rate": 1., "seconds_per_hour": None,
            "stderr_seconds_per_hour": None, "windows": windows, "status": "insufficient_windows"}
     if len(windows) >= 4:
         x = np.array([w["video_midpoint"] for w in windows])
-        fit = linregress(x, [w["offset_seconds"] for w in windows])
-        detected = abs(fit.slope) > 3*fit.stderr and abs(fit.slope)*np.ptp(x) > .5
+        y = np.array([w["offset_seconds"] for w in windows])
+        robust = theilslopes(y, x)
+        residual = y-(robust.intercept+robust.slope*x)
+        residual -= np.median(residual)
+        good = abs(residual) <= max(.2, 5*np.median(abs(residual)))
+        if good.sum() < 4 or good.mean() < .8:
+            obj["status"] = "inconsistent_windows"
+            return obj
+        fit = linregress(x[good], y[good])
+        scatter = float(np.std(y[good]-(fit.intercept+fit.slope*x[good])))
+        detected = abs(fit.slope) > 3*fit.stderr and abs(fit.slope)*np.ptp(x[good]) > .5
         obj.update(detected=bool(detected), clock_rate=float(1+fit.slope) if detected else 1.,
                    measured_clock_rate=float(1+fit.slope), seconds_per_hour=float(fit.slope*3600),
                    stderr_seconds_per_hour=float(fit.stderr*3600),
-                   intercept_seconds=float(fit.intercept), status="measured")
+                   intercept_seconds=float(fit.intercept), intercept_stderr_seconds=float(fit.intercept_stderr),
+                   residual_std_seconds=scatter, inlier_windows=int(good.sum()), status="measured")
     return obj
 
 
 def synchronize(track: Track, telemetry: Telemetry) -> SyncResult:
+    for name, time in (("track", track.time), ("video", telemetry.time)):
+        if np.ndim(time) != 1 or not np.all(np.isfinite(time)) or np.any(np.diff(time) <= 0):
+            raise ValueError(f"{name} times must be finite, strictly increasing 1-D arrays")
+    if len(track.time) < 2 or any(np.shape(a) != np.shape(track.time) for a in
+                                (track.latitude, track.longitude, track.altitude)):
+        raise ValueError("Track needs at least two fixes and matching 1-D arrays")
+    for key, values in telemetry.channels.items():
+        if key in {"GYRO", "ACCL", "GRAV", "CORI", "IORI"}:
+            width = 4 if key in {"CORI", "IORI"} else 3
+            if np.shape(values) != (len(telemetry.time), width):
+                raise ValueError(f"{key} must have shape (video samples, {width})")
+    if np.ndim(telemetry.gps_time) != 1 or np.shape(telemetry.gps_utc) != np.shape(telemetry.gps_time):
+        raise ValueError("GPS video and UTC times must be matching 1-D arrays")
     if len(telemetry.time) < 2:
         return SyncResult("failed", message="No telemetry samples", date=track.date)
-    if len(telemetry.gps_time) >= 3 and track.date is not None:
-        midnight = datetime.combine(track.date, datetime.min.time(), timezone.utc).timestamp()
+    origin_date = track.date
+    finite_gps = np.isfinite(telemetry.gps_utc) & np.isfinite(telemetry.gps_time)
+    if origin_date is None and finite_gps.sum() >= 3:
+        # GPS establishes a missing calendar date. Choose the nearby midnight
+        # with the largest overlap with the track's unwrapped seconds.
+        stamps = telemetry.gps_utc[finite_gps]
+        center_day = datetime.fromtimestamp(float(np.median(stamps)), timezone.utc).date()
+        candidates = [center_day+timedelta(days=i) for i in (-1, 0, 1)]
+        def overlap(day):
+            epoch = datetime.combine(day, datetime.min.time(), timezone.utc).timestamp()
+            return min(track.time[-1], stamps.max()-epoch)-max(track.time[0], stamps.min()-epoch)
+        origin_date = max(candidates, key=overlap)
+    if len(telemetry.gps_time) >= 3 and origin_date is not None:
+        midnight = datetime.combine(origin_date, datetime.min.time(), timezone.utc).timestamp()
         delta = telemetry.gps_utc-midnight-telemetry.gps_time
-        valid = np.isfinite(delta)
-        center = np.median(delta[valid]) if valid.any() else np.nan
-        valid &= abs(delta-center) < 5
+        valid = np.isfinite(delta) & np.isfinite(telemetry.gps_time)
+        # Reject time outliers around a robust trend, not around a constant
+        # offset: a valid drifting GPS clock can span many offset seconds.
         if valid.sum() >= 3:
+            x, y = telemetry.gps_time[valid], delta[valid]
+            order = np.argsort(x)
+            third = max(1, len(x)//3)
+            lo, hi = order[:third], order[-third:]
+            span = np.median(x[hi])-np.median(x[lo])
+            slope = (np.median(y[hi])-np.median(y[lo]))/span if span > 0 else 0.
+            intercept = np.median(y-slope*x)
+            residual = delta-intercept-slope*telemetry.gps_time
+            mad = np.median(abs(residual[valid]))
+            valid &= abs(residual) <= max(.5, 6*mad)
+        inlier_fraction = float(valid.sum()/max(1, finite_gps.sum()))
+        if valid.sum() >= 3 and inlier_fraction >= .8:
             gt = telemetry.gps_time[valid]
             gu = telemetry.gps_utc[valid]-midnight
             fit = linregress(gt, gu) if np.ptp(gt) > 0 else None
-            scatter = float(np.std(delta[valid]))
+            residual = gu-(fit.intercept+fit.slope*gt) if fit else delta[valid]-np.median(delta[valid])
+            scatter = float(np.std(residual))
             # GPS is primary, but must refer to the supplied track's UTC span.
             overlap = min(track.time[-1], gu.max())-max(track.time[0], gu.min())
             if overlap >= 0 and scatter < 2:
                 detected = bool(fit and abs(fit.slope-1) > 3*fit.stderr and abs(fit.slope-1)*np.ptp(gt) > .5)
                 offset = float(fit.intercept if detected else np.median(delta[valid]))
-                return SyncResult("ok", offset, max(.5, scatter*3), "gps", confidence={"gps_samples": int(valid.sum()), "residual_std_seconds": scatter},
+                return SyncResult("ok", offset, max(.5, scatter*3, 3*float(fit.intercept_stderr) if fit else 0), "gps", confidence={"gps_samples": int(valid.sum()), "gps_inlier_fraction": inlier_fraction, "residual_std_seconds": scatter},
                                   drift={"detected": detected, "clock_rate": float(fit.slope) if detected else 1.,
                                          "seconds_per_hour": float((fit.slope-1)*3600) if fit else None,
                                          "stderr_seconds_per_hour": float(fit.stderr*3600) if fit else None},
-                                  chapters=telemetry.chapters, date=track.date)
+                                  chapters=telemetry.chapters, date=origin_date)
     utc, t, tf, vf = build_features(track, telemetry)
     result = match_features(utc, t, tf, vf)
     result.date, result.chapters = track.date, telemetry.chapters
@@ -235,5 +303,8 @@ def synchronize(track: Track, telemetry: Telemetry) -> SyncResult:
         result.drift = estimate_drift(utc, t, tf[key], vf[key], result.offset_seconds, absolute=key == "yaw")
         if result.drift["detected"]:
             # UTC = video * rate + intercept, not midpoint offset + rate.
-            result.offset_seconds = result.drift["intercept_seconds"]
+            result.offset_seconds = round(result.drift["intercept_seconds"], 3)
+            result.uncertainty_seconds = max(result.uncertainty_seconds,
+                                             3*result.drift["intercept_stderr_seconds"],
+                                             3*result.drift["residual_std_seconds"])
     return result

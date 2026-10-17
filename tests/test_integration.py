@@ -51,6 +51,35 @@ def test_full_flight(flight):
     assert result.chapters[1]["start"] == pytest.approx(result.chapters[0]["duration"])
 
 
+def test_first_two_chapters(flight):
+    track, _, paths = flight
+    result = synchronize(track, read_video(paths[:2]))
+    print("TWO CHAPTERS", result.offset_seconds, result.confidence)
+    assert result.status == "ok"
+    assert result.offset_seconds == pytest.approx(34346, abs=2)
+    assert not result.drift["detected"]
+
+
+@pytest.mark.parametrize("duration", [600, 180, 30])
+def test_crop_sweep(flight, duration):
+    track, telemetry, _ = flight
+    accepted, declined, errors = 0, 0, []
+    for start in range(300, 3901, 300):
+        if start+duration > telemetry.time[-1]:
+            continue
+        result = synchronize(track, telemetry.slice(start, start+duration))
+        assert result.status in {"ok", "ambiguous"}
+        if result.status == "ok":
+            accepted += 1
+            error = result.offset_seconds-34346-start
+            errors.append(abs(error))
+            assert abs(error) <= 2
+        else:
+            declined += 1
+            assert result.offset_seconds is None
+    print("SWEEP", duration, "accepted", accepted, "declined", declined, "max_error", max(errors, default=None))
+
+
 @pytest.mark.parametrize("start,duration", [(1200, 600), (1800, 180), (1800, 30),
                                                 (2400, 600), (2400, 180), (2400, 30)])
 def test_middle_clips(flight, start, duration):
