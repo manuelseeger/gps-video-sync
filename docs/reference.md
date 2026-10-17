@@ -196,7 +196,8 @@ these conditions are true:
 - At least three finite observations exist, and at least 80% are inliers of a
   robust line fit.
 - The inliers span at least 10 seconds of video time.
-- Video time and GPS UTC both strictly increase across the inliers.
+- Video time strictly increases across the inliers. GPS UTC increases from the
+  first to the last inlier and never decreases by more than 0.1 seconds.
 - The fitted clock rate differs from 1 by at most 0.002 (7.2 seconds per hour),
   plus three standard errors of the fitted rate, plus 0.2 seconds divided by the
   GPS span. The last term allows for slow wander of up to 0.1 seconds over a
@@ -211,7 +212,10 @@ these conditions are true:
   the following window. Near the start and end, a window shrinks to the
   available observations, down to one. A difference of more than 0.1 seconds,
   and of more than six standard errors of the white noise between adjacent
-  observations, is a step. Noise within ±0.05 seconds cannot cause a step. A
+  observations, is a step. Before the comparison, the difference is reduced by
+  the possible detrending rate error, 0.1 seconds divided by the distance
+  between the medians of the first and last thirds, times the distance between
+  the two windows. Noise within ±0.05 seconds cannot cause a step. A
   single outlier inside the interval is not a step. A deviating first or last
   observation is a step.
 - The GPS interval overlaps the track.
@@ -222,9 +226,10 @@ is used when it is significant and changes the mapping by more than 0.5 seconds
 over the combined interval of the video timeline and the GPS observations.
 Otherwise `clockRate` is 1 and the offset is the median at the GPS observations.
 The uncertainty includes the possible rate error extrapolated to the video start
-and end. It also includes the rate bias that an undetected step of up to 0.1
-seconds can cause. Therefore a short GPS interval far from the video start does
-not give a GPS result.
+and end. It also includes the effect of an undetected step of up to 0.1
+seconds: 0.1 seconds on the median offset, or the resulting bias of a fitted
+rate. Therefore a short GPS interval far from the video start does not give a
+GPS result.
 
 When GPS time is present but unusable, `confidence.gps_rejected` gives the
 reason. A motion result that is not accepted also states that reason in

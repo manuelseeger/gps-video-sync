@@ -25,7 +25,8 @@ def _gps_step(time, delta):
     before the split is compared with the median of the window after it. Near
     the ends a window shrinks to the available observations, down to one.
     A difference of more than GPS_STEP_SECONDS and more than six standard
-    errors is a step. The standard error uses the white noise between adjacent
+    errors, after an allowance for the detrending rate error over the distance
+    between the windows, is a step. The standard error uses the white noise between adjacent
     observations. Observation noise within +-GPS_STEP_SECONDS/2 cannot make two
     medians differ by more than GPS_STEP_SECONDS. A single outlier inside the
     interval does not move a median of three or more observations.
@@ -39,23 +40,28 @@ def _gps_step(time, delta):
     span = float(np.median(time[-third:])-np.median(time[:third]))
     rate = (np.median(delta[-third:])-np.median(delta[:third]))/span if span > 0 else 0.
     level = delta-rate*time
+    # Noise within +-GPS_STEP_SECONDS/2 changes each third's median by at most
+    # that much, so the detrending rate error is at most GPS_STEP_SECONDS/span.
+    rate_error = GPS_STEP_SECONDS/span if span > 0 else np.inf
     noise = 1.4826*float(np.median(abs(np.diff(level))))/np.sqrt(2)
 
-    def stepped(before, after, size_before, size_after):
+    def stepped(before, after, size_before, size_after, distance):
         error = 1.25*noise*np.sqrt(1/size_before+1/size_after)
-        return np.any(abs(after-before) > np.maximum(GPS_STEP_SECONDS, 6*error))
+        return np.any(abs(after-before)-rate_error*distance > np.maximum(GPS_STEP_SECONDS, 6*error))
 
     for window in [w for w in GPS_STEP_WINDOWS if w <= n//2] or [1]:
         if n >= 2*window:
             medians = np.median(np.lib.stride_tricks.sliding_window_view(level, window), axis=1)
-            if stepped(medians[:-window], medians[window:], window, window):
+            centers = np.mean(np.lib.stride_tricks.sliding_window_view(time, window), axis=1)
+            if stepped(medians[:-window], medians[window:], window, window, centers[window:]-centers[:-window]):
                 return True
         for split in range(1, n):
             if window <= split <= n-window:
                 continue
-            before = level[max(0, split-window):split]
-            after = level[split:split+window]
-            if stepped(np.median(before), np.median(after), len(before), len(after)):
+            lo, hi = max(0, split-window), split+window
+            before, after = level[lo:split], level[split:hi]
+            distance = float(np.mean(time[split:hi])-np.mean(time[lo:split]))
+            if stepped(np.median(before), np.median(after), len(before), len(after), distance):
                 return True
     return False
 
@@ -326,7 +332,8 @@ def synchronize(track: Track, telemetry: Telemetry) -> SyncResult:
             gps_rejection = "GPS UTC observations are inconsistent"
         elif np.ptp(gt) < MIN_GPS_SPAN_SECONDS:
             gps_rejection = f"GPS UTC observations span less than {MIN_GPS_SPAN_SECONDS:g} s"
-        elif np.any(np.diff(gt) <= 0) or np.any(np.diff(gu) <= 0):
+        elif (np.any(np.diff(gt) <= 0) or gu[-1] <= gu[0]
+              or np.any(np.diff(gu) < -GPS_STEP_SECONDS)):
             gps_rejection = "GPS UTC does not increase with video time"
         elif fit is None or (abs(fit.slope-1) > MAX_GPS_RATE_ERROR + 3*fit.stderr
                              + 2*GPS_STEP_SECONDS/float(np.ptp(gt))):
@@ -342,12 +349,13 @@ def synchronize(track: Track, telemetry: Telemetry) -> SyncResult:
             if detected:
                 offset = float(fit.intercept)
                 reach = 3*(float(fit.intercept_stderr) + float(fit.stderr)*max(abs(first), abs(last)))
+                # An undetected step below GPS_STEP_SECONDS can bias the fitted rate.
+                reach += 1.5*GPS_STEP_SECONDS*max(abs(first), abs(last), last-first)/float(np.ptp(gt))
             else:
                 offset = float(np.median(gu-gt))
                 center = float(np.mean(gt))
-                reach = (rate_error + 3*float(fit.stderr))*max(center-first, last-center)
-            # An undetected step below GPS_STEP_SECONDS can bias the fitted rate.
-            reach += 1.5*GPS_STEP_SECONDS*max(abs(first), abs(last), last-first)/float(np.ptp(gt))
+                # An undetected step below GPS_STEP_SECONDS can bias the median.
+                reach = (rate_error + 3*float(fit.stderr))*max(center-first, last-center) + GPS_STEP_SECONDS
             uncertainty = max(.5, scatter*3, reach)
             if scatter >= .5:
                 gps_rejection = "GPS UTC residuals exceed 0.5 s"

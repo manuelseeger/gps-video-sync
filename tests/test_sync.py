@@ -295,3 +295,11 @@ def test_short_plateau_in_short_sequence_is_rejected():
     utc[30:35] += .3
     result = _gps_case(t, utc)
     assert result.method == "motion" and "step" in result.confidence["gps_rejected"]
+
+
+def test_smooth_bounded_wander_is_not_a_step():
+    t = np.arange(100.)
+    noise = .05*np.sin(np.linspace(0, 3.5*np.pi, 100) + np.pi/4)
+    result = _gps_case(t, 30010 + t + noise)
+    assert result.method == "gps"
+    assert abs(result.offset_seconds - 30010) <= result.uncertainty_seconds
