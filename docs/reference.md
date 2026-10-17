@@ -200,8 +200,17 @@ these conditions are true:
 - The fitted clock rate is within 0.002 of 1 (7.2 seconds per hour). This is
   more than ten times the usual tolerance of camera clock crystals. Larger rates
   come from frozen, stepped, or wrong UTC values.
-- The residual standard deviation is below 0.5 seconds.
+- The residual standard deviation is below 0.5 seconds, and no residual changes
+  by more than 0.5 seconds between consecutive observations (no UTC step).
 - The GPS interval overlaps the track.
+- The estimated uncertainty is at most 2 seconds over the whole video timeline.
+
+GPS UTC values outside the years 1970 to 9999 are ignored. The fitted clock rate
+is used when it is significant and changes the mapping by more than 0.5 seconds
+between the start of the video timeline and the last GPS observation. Otherwise
+`clockRate` is 1 and the offset is the median at the GPS observations. The
+uncertainty then includes the possible rate error extrapolated to the video
+start and end.
 
 When GPS time is present but unusable, `confidence.gps_rejected` gives the
 reason. A motion result that is not accepted also states that reason in

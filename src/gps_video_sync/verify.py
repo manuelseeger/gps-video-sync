@@ -8,9 +8,12 @@ def _number(value, name):
     if isinstance(value, bool):
         raise ValueError(f"{name} must be a number")
     try:
-        return float(value)
-    except (TypeError, ValueError) as exc:
-        raise ValueError(f"{name} must be a number") from exc
+        number = float(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError(f"{name} must be a finite number") from exc
+    if not np.isfinite(number):
+        raise ValueError(f"{name} must be a finite number")
+    return number
 
 
 def _local_video(path):

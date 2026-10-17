@@ -9,6 +9,8 @@ from .models import Track, Telemetry, SyncResult
 
 MIN_GPS_SPAN_SECONDS = 10.
 MAX_GPS_RATE_ERROR = 2e-3
+MAX_GPS_UNCERTAINTY_SECONDS = 2.
+MAX_UNIX_SECONDS = 253402300800.
 
 
 def _grid(time, values, grid, max_gap=None):
@@ -239,7 +241,8 @@ def synchronize(track: Track, telemetry: Telemetry) -> SyncResult:
         return SyncResult("failed", message="No telemetry samples", date=track.date)
     origin_date = track.date
     gps_rejection = ""
-    finite_gps = np.isfinite(telemetry.gps_utc) & np.isfinite(telemetry.gps_time)
+    finite_gps = (np.isfinite(telemetry.gps_utc) & np.isfinite(telemetry.gps_time)
+                  & (telemetry.gps_utc >= 0) & (telemetry.gps_utc < MAX_UNIX_SECONDS))
     if origin_date is None and finite_gps.sum() >= 3:
         stamps = telemetry.gps_utc[finite_gps]
         center_day = datetime.fromtimestamp(float(np.median(stamps)), timezone.utc).date()
@@ -251,7 +254,7 @@ def synchronize(track: Track, telemetry: Telemetry) -> SyncResult:
     if len(telemetry.gps_time) >= 3 and origin_date is not None:
         midnight = datetime.combine(origin_date, datetime.min.time(), timezone.utc).timestamp()
         delta = telemetry.gps_utc-midnight-telemetry.gps_time
-        valid = np.isfinite(delta) & np.isfinite(telemetry.gps_time)
+        valid = finite_gps & np.isfinite(delta)
         if valid.sum() >= 3:
             x, y = telemetry.gps_time[valid], delta[valid]
             order = np.argsort(x)
@@ -281,14 +284,28 @@ def synchronize(track: Track, telemetry: Telemetry) -> SyncResult:
             residual = gu-(fit.intercept+fit.slope*gt)
             scatter = float(np.std(residual))
             overlap = min(track.time[-1], gu.max())-max(track.time[0], gu.min())
+            first = min(float(gt[0]), float(telemetry.time[0]))
+            last = max(float(gt[-1]), float(telemetry.time[-1]))
+            rate_error = abs(fit.slope-1)
+            detected = bool(rate_error > 3*fit.stderr and rate_error*(last-first) > .5)
+            if detected:
+                offset = float(fit.intercept)
+                reach = 3*(float(fit.intercept_stderr) + float(fit.stderr)*max(abs(first), abs(last)))
+            else:
+                offset = float(np.median(gu-gt))
+                center = float(np.mean(gt))
+                reach = (rate_error + 3*float(fit.stderr))*max(center-first, last-center)
+            uncertainty = max(.5, scatter*3, reach)
             if scatter >= .5:
                 gps_rejection = "GPS UTC residuals exceed 0.5 s"
+            elif np.any(abs(np.diff(residual)) > .5):
+                gps_rejection = "GPS UTC has a step of more than 0.5 s"
             elif overlap < 0:
                 gps_rejection = "GPS UTC does not overlap the track"
+            elif uncertainty > MAX_GPS_UNCERTAINTY_SECONDS:
+                gps_rejection = "GPS UTC observations do not constrain the clock over the whole video"
             else:
-                detected = bool(abs(fit.slope-1) > 3*fit.stderr and abs(fit.slope-1)*np.ptp(gt) > .5)
-                offset = float(fit.intercept if detected else np.median(gu-gt))
-                return SyncResult("ok", offset, max(.5, scatter*3, 3*float(fit.intercept_stderr)), "gps", confidence={"gps_samples": int(valid.sum()), "gps_inlier_fraction": inlier_fraction, "gps_span_seconds": float(np.ptp(gt)), "residual_std_seconds": scatter},
+                return SyncResult("ok", offset, uncertainty, "gps", confidence={"gps_samples": int(valid.sum()), "gps_inlier_fraction": inlier_fraction, "gps_span_seconds": float(np.ptp(gt)), "residual_std_seconds": scatter},
                                   drift={"detected": detected, "clock_rate": float(fit.slope) if detected else 1.,
                                          "measured_clock_rate": float(fit.slope),
                                          "seconds_per_hour": float((fit.slope-1)*3600),

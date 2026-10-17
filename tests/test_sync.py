@@ -155,7 +155,7 @@ def test_correlated_turn_proxies_are_one_agreement_group():
 
 
 def _gps_case(gps_time, gps_utc):
-    track = Track(np.arange(30000., 32000.), np.ones(2000), np.ones(2000), np.ones(2000), date(2026, 1, 1))
+    track = Track(np.arange(30000., 45000.), np.ones(15000), np.ones(15000), np.ones(15000), date(2026, 1, 1))
     time = np.arange(0., max(2., float(np.max(gps_time)) + 1), .1)
     return synchronize(track, Telemetry(time, {}, gps_time=np.asarray(gps_time, float),
                                         gps_utc=1767225600 + np.asarray(gps_utc, float)))
@@ -192,3 +192,32 @@ def test_track_without_whole_second_grid_is_ambiguous():
     result = synchronize(track, telemetry)
     assert result.status == "ambiguous" and result.offset_seconds is None
     assert "two whole seconds" in result.message
+
+
+def test_gps_far_from_video_start_uses_rate_or_rejects():
+    gt = 10000 + np.arange(12.)
+    result = _gps_case(gt, 30010 + 1.001 * gt)
+    assert result.method == "gps" and result.drift["detected"]
+    assert result.offset_seconds == pytest.approx(30010, abs=.01)
+    noise = np.random.default_rng(4).normal(scale=.005, size=12)
+    result = _gps_case(gt, 30010 + 1.001 * gt + noise)
+    assert result.method == "motion" and result.offset_seconds is None
+    assert "constrain" in result.confidence["gps_rejected"]
+    gt = 10000 + np.arange(0., 3600.)
+    result = _gps_case(gt, 30010 + 1.001 * gt)
+    assert result.method == "gps" and result.drift["detected"]
+    assert result.offset_seconds == pytest.approx(30010, abs=.01)
+
+
+def test_gps_long_utc_step_is_rejected():
+    gt = np.arange(1000.)
+    result = _gps_case(gt, 30010 + gt + np.r_[np.zeros(500), np.ones(500)])
+    assert result.method == "motion" and result.offset_seconds is None
+    assert "step" in result.confidence["gps_rejected"]
+
+
+def test_gps_out_of_range_utc_without_track_date():
+    track = Track(np.arange(30000., 32000.), np.ones(2000), np.ones(2000), np.ones(2000))
+    gt = np.arange(60.)
+    result = synchronize(track, Telemetry(gt, {}, gps_time=gt, gps_utc=np.full(60, 1e20)))
+    assert result.status == "ambiguous" and result.offset_seconds is None

@@ -21,6 +21,9 @@ class IGCReader:
                     pass
             if not line.startswith("B") or len(line) < 35:
                 continue
+            if not (line[1:14].isascii() and line[1:14].isdigit()
+                    and line[15:23].isascii() and line[15:23].isdigit()):
+                continue
             try:
                 h, m, s = int(line[1:3]), int(line[3:5]), int(line[5:7])
                 if h > 23 or m > 59 or s > 59:

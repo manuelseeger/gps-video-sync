@@ -219,6 +219,8 @@ def _ok_result(path, **changes):
     ({"clockRate": None, "drift": {"clock_rate": None}}, 0),
     ({"clockRate": "fast"}, 1),
     ({"clockRate": True}, 1),
+    ({"clockRate": 10**400}, 1),
+    ({"offset_seconds": 10**400}, 1),
     ({"offset_seconds": {}}, 1),
     ({"drift": [], "clockRate": None}, 1),
 ])
