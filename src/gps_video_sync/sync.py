@@ -14,7 +14,8 @@ MAX_UNIX_SECONDS = 253370764800.
 GPS_STEP_SECONDS = .1
 
 
-GPS_STEP_MIN_RUN = 3
+GPS_STEP_EDGE_SPLITS = 60
+GPS_STEP_INNER_SPLITS = 200
 
 
 def _gps_step(time, delta):
@@ -23,28 +24,36 @@ def _gps_step(time, delta):
     For each split, the medians of all earlier and all later detrended
     observations are compared. The detrending rate is the median rate of
     observation pairs, 10% of the observations apart, that do not cross the
-    split. A step needs at least GPS_STEP_MIN_RUN observations on each side. The threshold is the greater of GPS_STEP_SECONDS
-    and six standard errors of the median difference. Isolated outliers and
-    short excursions do not move both medians, so they are not steps.
+    split. Splits are every position within GPS_STEP_EDGE_SPLITS observations
+    of each end, plus GPS_STEP_INNER_SPLITS evenly spaced positions. A single
+    deviating first or last observation is a step. The threshold is the greater
+    of GPS_STEP_SECONDS and six standard errors of the median difference,
+    including the detrending rate error. Isolated outliers and short excursions
+    inside the interval do not move both medians, so they are not steps.
     """
     order = np.argsort(time, kind="stable")
     time, delta = time[order], delta[order]
     n = len(time)
-    if n < 2*GPS_STEP_MIN_RUN:
+    if n < 2:
         return False
     lag = max(1, n//10)
     baseline = time[lag:]-time[:-lag]
     pair_rates = np.where(baseline > 0, (delta[lag:]-delta[:-lag])/np.where(baseline > 0, baseline, 1), np.nan)
     noise = 1.4826*float(np.median(abs(np.diff(delta))))/np.sqrt(2)
-    edge = np.arange(GPS_STEP_MIN_RUN, min(n//2, 60)+1)
-    splits = np.unique(np.r_[edge, n-edge, np.linspace(GPS_STEP_MIN_RUN, n-GPS_STEP_MIN_RUN, 200).astype(int)])
+    pair_noise = noise*np.sqrt(2)/max(float(np.median(baseline)) if len(baseline) else 0., 1e-9)
+    edge = np.arange(1, min(n//2, GPS_STEP_EDGE_SPLITS)+1)
+    splits = np.unique(np.r_[edge, n-edge, np.linspace(1, n-1, GPS_STEP_INNER_SPLITS).astype(int)])
     for split in splits:
         # Rates from observation pairs on the same side of the split.
         rates = np.r_[pair_rates[:max(0, split-lag)], pair_rates[split:]]
         rates = rates[np.isfinite(rates)]
         slope = float(np.median(rates)) if len(rates) else 0.
         before, after = delta[:split]-slope*time[:split], delta[split:]-slope*time[split:]
-        error = 1.25*noise*np.sqrt(1/len(before)+1/len(after))
+        level_error = 1.25*noise*np.sqrt(1/len(before)+1/len(after))
+        # Each observation is in at most two pairs.
+        rate_error = 1.25*pair_noise/np.sqrt(max(1., len(rates)/2))
+        distance = float(np.mean(time[split:])-np.mean(time[:split]))
+        error = np.hypot(level_error, rate_error*distance)
         if abs(np.median(after)-np.median(before)) > max(GPS_STEP_SECONDS, 6*error):
             return True
     return False

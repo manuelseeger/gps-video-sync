@@ -122,7 +122,7 @@ def test_gps_drift_uses_fitted_residual(rate):
     assert result.offset_seconds == pytest.approx(30010, abs=.1)
     assert result.drift["clock_rate"] == pytest.approx(rate, abs=1e-8)
     assert result.uncertainty_seconds <= 1
-    telemetry.gps_utc[::20] += 100
+    telemetry.gps_utc[5::20] += 100
     result = synchronize(track, telemetry)
     assert result.method == "gps"
     assert result.offset_seconds == pytest.approx(30010, abs=.1)
@@ -245,3 +245,17 @@ def test_clean_noisy_gps_is_not_a_step(lock):
         result = _gps_case(gt, 30010 + gt + rng.uniform(-.05, .05, len(gt)))
         assert result.method == "gps", (seed, result.confidence)
         assert abs(result.offset_seconds - 30010) <= result.uncertainty_seconds
+
+
+@pytest.mark.parametrize("n,seed", [(60, 61), (120, 16), (600, 3)])
+def test_short_clean_gps_is_not_a_step(n, seed):
+    gt = np.arange(float(n))
+    result = _gps_case(gt, 30010 + gt + np.random.default_rng(seed).uniform(-.05, .05, n))
+    assert result.method == "gps"
+    assert abs(result.offset_seconds - 30010) <= result.uncertainty_seconds
+
+
+def test_deviating_first_observation_is_a_step():
+    gt = np.arange(1000.)
+    result = _gps_case(gt, 30010 + gt + (gt >= 1))
+    assert result.method == "motion" and "step" in result.confidence["gps_rejected"]
