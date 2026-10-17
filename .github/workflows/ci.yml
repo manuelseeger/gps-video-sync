@@ -38,7 +38,43 @@ jobs:
 
   build:
     runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          enable-cache: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.15'
+      - name: Build and check distributions
+        run: |
+          uv build
+          python scripts/check_release.py dist
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: distributions
+          path: dist/*
+          if-no-files-found: error
+
+  metadata:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: distributions
+          path: dist
+      - name: Check distribution metadata
+        run: uvx twine check --strict dist/*
+
+  smoke:
+    needs: build
+    runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
         python: ['3.10', '3.15']
     steps:
@@ -49,13 +85,12 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: ${{ matrix.python }}
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: distributions
+          path: dist
       - name: Install FFmpeg
         run: sudo apt-get update && sudo apt-get install -y ffmpeg
-      - name: Build and check distributions
-        run: |
-          uv build
-          uvx twine check --strict dist/*
-          python scripts/check_release.py dist
       - name: Rebuild wheel from source archive
         run: |
           mkdir "$RUNNER_TEMP/source"
@@ -75,9 +110,3 @@ jobs:
           wheel=("$RUNNER_TEMP/rebuilt/"*.whl)
           uv pip install --python "$RUNNER_TEMP/smoke/bin/python" "${wheel[0]}[verify]"
           python -I "$GITHUB_WORKSPACE/scripts/smoke_installed.py" --verify --fixtures "$GITHUB_WORKSPACE/tests/fixtures"
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        if: matrix.python == '3.15'
-        with:
-          name: distributions
-          path: dist/*
-          if-no-files-found: error

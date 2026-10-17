@@ -67,8 +67,8 @@ Start with an empty `dist/` directory (move previous builds elsewhere):
 
 ```sh
 uv build
-uvx twine check --strict dist/*
 python scripts/check_release.py dist --version 0.1.0
+uvx twine check --strict dist/*
 ```
 
 The archive checker uses an exact file allowlist. Only package code, metadata,
@@ -95,9 +95,17 @@ python -I "$repo/scripts/smoke_installed.py" --verify
 
 The smoke test checks package/API versions, imports, module and command help,
 synthetic GPS synchronization through the API and CLI, and optional plotting.
-CI also builds a wheel from the source archive and tests installed wheels on
-Python 3.10 and 3.15, including real GoPro extraction and motion matching. Its
-Python 3.10 test job checks the lowest direct dependency versions.
+The CI `build` job uses Python 3.15 with the uv cache disabled. It builds the
+archives, runs the standard-library-only archive checker, and uploads the
+immutable `distributions` artifact before any dependency smoke tests run.
+A separate `metadata` job downloads that artifact and runs `twine check --strict`.
+The `smoke` jobs download the same artifact, build a wheel from its source
+archive, and test installed wheels on Python 3.10 and 3.15. These tests include
+the `verify` extra, real GoPro extraction, and motion matching with the fixtures.
+The test and smoke jobs install FFmpeg for frame extraction. The test job can
+also use its `ffprobe` executable for optional parity tests. Package execution
+does not need `ffprobe`. The Python 3.10 test job checks the lowest direct
+dependency versions.
 
 ## Publish
 
@@ -113,10 +121,13 @@ Python 3.10 test job checks the lowest direct dependency versions.
 
 4. Run the **Publish** workflow on that tag. Leave `production` disabled for
    a TestPyPI-only trial. Approve the `testpypi` deployment. The workflow runs
-   the complete CI suite, builds and checks both archives, publishes with
-   Trusted Publishing, installs the exact TestPyPI wheel outside the checkout,
-   tests the `verify` extra, and compares both the wheel and source archive
-   SHA-256 hashes with the build artifact.
+   the complete CI suite and publishes the approved artifact with Trusted
+   Publishing. The installation job first downloads the `distributions`
+   artifact, then downloads the exact TestPyPI wheel without dependencies.
+   Before installation or package execution, it compares the wheel bytes with
+   the approved wheel and checks both index archive SHA-256 hashes with
+   `scripts/check_index.py --index testpypi`. Only after these checks pass does
+   it install the wheel outside the checkout and test the `verify` extra.
    Dependencies are installed from PyPI, not from TestPyPI.
 5. Inspect the TestPyPI project page: README, project links, license, supported
    Python versions, and dependencies. Review the workflow's distribution
@@ -125,8 +136,13 @@ Python 3.10 test job checks the lowest direct dependency versions.
    permits existing files; the downloaded wheel must still match the build.
    Approve the `pypi` environment only after all checks and text review pass.
    The production job uploads the same artifact, without rebuilding it.
-7. Confirm the production installation job passes. It installs both the base
-   package and `gps-video-sync[verify]` from PyPI and runs installed smoke tests.
+7. Confirm the production installation job passes. It downloads the approved
+   `distributions` artifact and runs
+   `python scripts/check_index.py dist --version "$VERSION" --index pypi`.
+   This standard-library-only check compares both archive hashes and retries
+   while the index updates. A failed comparison blocks installation and package
+   execution. After the check passes, the job installs both the base package
+   and `gps-video-sync[verify]` from PyPI and runs installed smoke tests.
    Check the rendered PyPI project page and all documentation links.
 8. Create a GitHub release for the tag and record the release test results.
 
