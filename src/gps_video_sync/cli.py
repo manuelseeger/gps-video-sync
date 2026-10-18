@@ -9,8 +9,8 @@ import zipfile
 
 import numpy as np
 
-from . import __version__, read_track, read_video, synchronize
-from .models import Telemetry
+from . import __version__, read_track, read_video, synchronize, match_videos
+from .sync import validate_telemetry
 
 
 def _json_default(value):
@@ -26,68 +26,29 @@ def write_json(path, value):
                                     allow_nan=False) + "\n")
 
 
-def read_npz(path):
-    data = np.load(path, allow_pickle=False)
-    if not isinstance(data, np.lib.npyio.NpzFile):
-        raise ValueError(f"{path} is not an NPZ archive")
-    with data:
-        if "time" not in data.files:
-            raise ValueError("NPZ needs a time array")
-        time = np.asarray(data["time"], dtype=float)
-        if time.ndim != 1 or not len(time) or not np.all(np.isfinite(time)):
-            raise ValueError("NPZ time must be a nonempty finite one-dimensional array")
-        if np.any(np.diff(time) <= 0):
-            raise ValueError("NPZ time must be strictly increasing")
-        reserved = {"time", "gps_time", "gps_utc", "chapters", "schema_version"}
-        channels = {k: np.asarray(data[k], dtype=float) for k in data.files if k not in reserved}
-        for key, values in channels.items():
-            if values.ndim == 0 or len(values) != len(time):
-                raise ValueError(f"NPZ channel {key!r} must match time length")
-            if key in {"GYRO", "ACCL", "GRAV", "CORI", "IORI"}:
-                width = 4 if key in {"CORI", "IORI"} else 3
-                if values.shape != (len(time), width):
-                    raise ValueError(f"NPZ channel {key!r} must have shape (samples, {width})")
-        gps_time = np.asarray(data["gps_time"], dtype=float) if "gps_time" in data else np.empty(0)
-        gps_utc = np.asarray(data["gps_utc"], dtype=float) if "gps_utc" in data else np.empty(0)
-        if gps_time.ndim != 1 or gps_utc.shape != gps_time.shape:
-            raise ValueError("NPZ gps_time and gps_utc must be matching one-dimensional arrays")
-        chapters = json.loads(str(data["chapters"].item())) if "chapters" in data else []
-        if not isinstance(chapters, list) or any(not isinstance(c, dict) for c in chapters):
-            raise ValueError("NPZ chapters must be a JSON list of objects")
-        return Telemetry(time, channels, chapters, gps_time, gps_utc)
-
-
 def _telemetry(args):
-    if not np.isfinite(args.hz) or args.hz <= 0:
-        raise ValueError("--hz must be a positive finite number")
-    if args.source == "npz":
-        if len(args.videos) != 1:
-            raise ValueError("--source npz requires exactly one exported NPZ file")
-        return read_npz(args.videos[0])
-    try:
-        return read_video(args.videos, source=args.source, hz=args.hz, cache_dir=args.cache_dir)
-    except KeyError as exc:
-        if exc.args == (args.source,):
-            raise ValueError(f"Unknown or unavailable video source: {args.source}") from exc
-        raise
+    return read_video(args.videos[0], source=args.source, hz=args.hz, cache_dir=args.cache_dir)
 
 
 def _export(telemetry, path):
+    validate_telemetry(telemetry)
+    recording = dict(video=telemetry.video, duration=telemetry.duration,
+                     media_offset_seconds=telemetry.media_offset_seconds)
     if Path(path).suffix.lower() == ".npz":
-        reserved = {"time", "gps_time", "gps_utc", "chapters", "schema_version"}
+        reserved = {"time", "gps_time", "gps_utc", "recording", "chapters", "schema_version"}
         if reserved.intersection(telemetry.channels):
             raise ValueError("Telemetry channel name conflicts with NPZ metadata")
         np.savez_compressed(path, time=telemetry.time, **telemetry.channels,
                             gps_time=telemetry.gps_time, gps_utc=telemetry.gps_utc,
-                            chapters=json.dumps(telemetry.chapters, default=_json_default),
-                            schema_version="1.0.0")
+                            recording=json.dumps(recording, default=_json_default),
+                            schema_version="2.0.0")
     elif Path(path).suffix.lower() == ".json":
         def nullable(values):
             values = np.asarray(values)
             return np.where(np.isfinite(values), values, None).tolist()
-        write_json(path, dict(schema_version="1.0.0", time=nullable(telemetry.time),
+        write_json(path, dict(schema_version="2.0.0", time=nullable(telemetry.time),
                              channels={k: nullable(v) for k, v in telemetry.channels.items()},
-                             chapters=telemetry.chapters, gps_time=nullable(telemetry.gps_time),
+                             recording=recording, gps_time=nullable(telemetry.gps_time),
                              gps_utc=nullable(telemetry.gps_utc)))
     else:
         raise ValueError("--out must end in .npz or .json")
@@ -105,7 +66,7 @@ def _parser():
     commands = parser.add_subparsers(dest="command", required=True)
     for command in ("sync", "telemetry", "verify", "info"):
         sub = commands.add_parser(command)
-        sub.add_argument("videos", metavar="VIDEO", nargs="+")
+        sub.add_argument("videos", metavar="VIDEO", nargs="+" if command == "sync" else 1)
         sub.add_argument("--source", default="gopro", help="video source plugin, or npz")
         sub.add_argument("--cache-dir", type=Path)
         sub.add_argument("--hz", type=float, default=10, help="telemetry sample rate (default: 10)")
@@ -127,17 +88,19 @@ def _parser():
 def main(argv=None):
     args = _parser().parse_args(argv)
     try:
-        telemetry = _telemetry(args)
-        if args.command == "telemetry":
-            _export(telemetry, args.out)
-            return 0
-        if args.command == "info":
-            print(json.dumps(dict(schema_version="1.0.0", samples=len(telemetry.time),
-                                  start_seconds=float(telemetry.time[0]) if len(telemetry.time) else None,
-                                  end_seconds=float(telemetry.time[-1]) if len(telemetry.time) else None,
-                                  channels={k: list(v.shape) for k, v in telemetry.channels.items()},
-                                  gps_samples=len(telemetry.gps_time), chapters=telemetry.chapters),
-                             indent=2, default=_json_default, allow_nan=False))
+        if args.command in {"telemetry", "info"}:
+            telemetry = _telemetry(args)
+            if args.command == "telemetry":
+                _export(telemetry, args.out)
+            else:
+                print(json.dumps(dict(schema_version="2.0.0", video=telemetry.video,
+                                      input_file=str(Path(args.videos[0]).expanduser().resolve()),
+                                      duration=telemetry.duration, samples=len(telemetry.time),
+                                      start_seconds=float(telemetry.time[0]) if len(telemetry.time) else None,
+                                      end_seconds=float(telemetry.time[-1]) if len(telemetry.time) else None,
+                                      channels={k: list(v.shape) for k, v in telemetry.channels.items()},
+                                      gps_samples=len(telemetry.gps_time)),
+                                 indent=2, default=_json_default, allow_nan=False))
             return 0
         try:
             track = read_track(args.track, format=args.track_format, altitude=args.altitude)
@@ -145,25 +108,29 @@ def main(argv=None):
             if exc.args == (args.track_format,):
                 raise ValueError(f"Unknown track format: {args.track_format}") from exc
             raise
-        result = (json.loads(args.result.read_text()) if args.command == "verify" and args.result
-                  else synchronize(track, telemetry).to_dict())
-        if not isinstance(result, dict):
-            raise ValueError("Sync result must be a JSON object")
         if args.command == "sync":
+            results = [r.to_dict() for r in match_videos(
+                track, args.videos, source=args.source, hz=args.hz, cache_dir=args.cache_dir)]
+            document = dict(schema_version="2.0.0", videos=results)
             if args.json:
-                write_json(args.json, result)
+                write_json(args.json, document)
             else:
-                print(json.dumps(result, indent=2, default=_json_default, allow_nan=False))
-        elif result.get("status") == "ok":
-            from .verify import plot_verification
-            plot_verification(track, telemetry, result, args.output, args.frames or [], args.videos)
-        if result.get("status") == "ambiguous":
-            print("ambiguous: " + (result.get("message") or "No unique alignment; inspect confidence."), file=sys.stderr)
-            return 2
-        if result.get("status") != "ok":
-            print("error: " + (result.get("message") or str(result.get("status"))), file=sys.stderr)
+                print(json.dumps(document, indent=2, default=_json_default, allow_nan=False))
+        else:
+            from .verify import plot_verification, select_result
+            telemetry = _telemetry(args)
+            result = (select_result(json.loads(args.result.read_text()), telemetry)
+                      if args.result else synchronize(track, telemetry).to_dict())
+            results = [result]
+            if result["status"] == "ok":
+                plot_verification(track, telemetry, result, args.output, args.frames or [])
+        for result in results:
+            if result["status"] != "ok":
+                print(f"{result.get('input_file') or result.get('video')}: {result['status']}: "
+                      + (result.get("message") or "No unique alignment; inspect confidence."), file=sys.stderr)
+        if any(r["status"] == "failed" for r in results):
             return 1
-        return 0
+        return 2 if any(r["status"] == "ambiguous" for r in results) else 0
     except (OSError, ValueError, KeyError, RuntimeError, ImportError, EOFError,
             zipfile.BadZipFile, subprocess.SubprocessError) as exc:
         detail = str(exc)

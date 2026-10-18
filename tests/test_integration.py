@@ -9,7 +9,7 @@ import sys
 import numpy as np
 import pytest
 
-from gps_video_sync import read_track, read_video, synchronize
+from gps_video_sync import read_track, read_video, synchronize, match_videos
 from gps_video_sync.cli import main
 from gps_video_sync import mp4
 from gps_video_sync.gpmf import number, streams
@@ -31,30 +31,24 @@ def flight(tmp_path_factory):
     with pytest.MonkeyPatch.context() as patch:
         patch.setattr(subprocess, "run", forbidden)
         patch.setattr(subprocess, "Popen", forbidden)
-        telemetry = read_video(paths, cache_dir=cache)
+        telemetry = [read_video(p, cache_dir=cache) for p in paths]
     return read_track(FIXTURES / "flight.igc"), telemetry, paths
 
 
-def test_extraction(flight):
-    _, telemetry, paths = flight
+@pytest.mark.parametrize("index", [0, 1])
+def test_extraction(flight, index):
+    _, recordings, paths = flight
+    telemetry = recordings[index]
+    assert telemetry.video == str(paths[index].resolve())
     assert set(telemetry.channels) == {"GYRO", "ACCL", "GRAV", "CORI", "IORI"}
-    assert len(telemetry.time) == pytest.approx(6000, abs=2)
+    assert len(telemetry.time) == pytest.approx(3000, abs=2)
+    assert telemetry.time[0] == 0
     assert np.all(np.diff(telemetry.time) > 0)
     for channel in telemetry.channels.values():
         assert channel.shape[0] == len(telemetry.time)
-        assert np.isfinite(channel).mean() > 0.99
+        assert np.isfinite(channel).mean() > .99
     assert len(telemetry.gps_time) == 0
-    assert len(telemetry.chapters) == len(paths)
-    assert telemetry.chapters[1]["start"] == pytest.approx(telemetry.chapters[0]["duration"])
-    assert sum(c["duration"] for c in telemetry.chapters) == pytest.approx(600, abs=0.1)
-
-
-def test_exact_chapter_timeline(flight):
-    _, telemetry, _ = flight
-    assert [c["duration"] for c in telemetry.chapters] == pytest.approx(
-        [8999991 / 30000, 9000992 / 30000], rel=0, abs=1e-9)
-    assert telemetry.chapters[1]["start"] == pytest.approx(8999991 / 30000, rel=0, abs=1e-9)
-    assert sum(c["duration"] for c in telemetry.chapters) == pytest.approx(18000983 / 30000, rel=0, abs=1e-9)
+    assert telemetry.duration == pytest.approx([8999991 / 30000, 9000992 / 30000][index], abs=1e-9)
 
 
 @pytest.mark.ffprobe
@@ -110,110 +104,65 @@ def test_fixture_samples_without_ffprobe(chapter, times, locations, total_bytes)
     assert sum(s.size for s in timeline.samples) == total_bytes
 
 
-def test_camera_clock_continuity():
-    clocks, base = [], 0
-    for chapter in (1, 2):
-        path = FIXTURES / f"chapter-{chapter:02}.mp4"
-        timeline = mp4.read_timeline(path)
-        with path.open("rb") as handle:
-            for sample in timeline.samples:
-                handle.seek(sample.offset)
-                for stream in streams(handle.read(sample.size)):
-                    fields = {r.key: r for r in stream}
-                    if "CORI" in fields:
-                        stamp = int(number(fields["STMP"]).ravel()[0])
-                        clocks.append(stamp / 1e6 - (base + sample.time))
-        base += timeline.duration
-    assert len(clocks) == 600
-    assert max(clocks) - min(clocks) < .005
-
-
-def test_alignment(flight):
+@pytest.mark.parametrize("index", [0, 1])
+def test_alignment(flight, index):
     track, telemetry, paths = flight
-    result = synchronize(track, telemetry)
+    result = synchronize(track, telemetry[index])
     assert result.status == "ok"
-    assert result.offset_seconds == pytest.approx(EXPECTED_OFFSET, abs=2)
+    assert result.video == str(paths[index].resolve())
+    assert result.offset_seconds == pytest.approx([36160.112, 36460.112][index], abs=2)
     assert not result.drift.get("detected", False)
-    assert len(result.chapters) == len(paths)
-
-
-@pytest.mark.parametrize("chapter", [0, 1])
-def test_individual_chapters(flight, tmp_path, chapter):
-    track, telemetry, paths = flight
-    result = synchronize(track, read_video([paths[chapter]], cache_dir=tmp_path))
-    assert result.status == "ok"
-    expected = EXPECTED_OFFSET + telemetry.chapters[chapter]["start"]
-    assert result.offset_seconds == pytest.approx(expected, abs=2)
 
 
 @pytest.mark.parametrize("start,duration,status", [
-    (0, 180, "ok"), (120, 180, "ok"), (240, 180, "ok"), (300, 180, "ok"),
-    (0, 30, "ambiguous"), (300, 30, "ambiguous"),
+    (0, 180, "ok"), (119, 180, "ok"),
+    (0, 30, "ambiguous"), (200, 30, "ambiguous"),
 ])
 def test_crops(flight, start, duration, status):
     track, telemetry, _ = flight
-    result = synchronize(track, telemetry.slice(start, start + duration))
+    result = synchronize(track, telemetry[0].slice(start, start + duration))
     assert result.status == status
+    assert result.media_offset_seconds == start
+    assert result.duration == duration
     if status == "ambiguous":
         assert result.offset_seconds is None
     else:
         assert result.offset_seconds == pytest.approx(EXPECTED_OFFSET + start, abs=2)
 
 
-def test_reversed_chapters_api_and_cli(flight, tmp_path):
-    track, expected, paths = flight
-    for order in (paths[::-1], paths):
-        telemetry = read_video(order, cache_dir=tmp_path / "api-cache")
-        assert telemetry.chapters == expected.chapters
-        assert [c["stmp_start"] for c in telemetry.chapters] == pytest.approx([1814.151224, 2114.151224], abs=1e-6)
-        np.testing.assert_array_equal(telemetry.time, expected.time)
-        for key in expected.channels:
-            np.testing.assert_array_equal(telemetry.channels[key], expected.channels[key])
-        result = synchronize(track, telemetry)
-        assert result.status == "ok"
-        assert result.offset_seconds == pytest.approx(EXPECTED_OFFSET, abs=2)
+def test_permutations_subsets_api_and_cli(flight, tmp_path):
+    track, _, paths = flight
+    baseline = {r.video: r.to_dict() for r in match_videos(track, paths, cache_dir=tmp_path / "cache")}
+    for order in (paths[::-1], paths, paths[:1], paths[1:]):
+        results = match_videos(track, order, cache_dir=tmp_path / "cache")
+        assert [r.to_dict() for r in results] == [baseline[str(p.resolve())] for p in order]
         proc = subprocess.run([sys.executable, "-m", "gps_video_sync", "sync", *map(str, order),
                                "--track", str(FIXTURES / "flight.igc"),
                                "--cache-dir", str(tmp_path / "cli-cache")], capture_output=True, text=True)
         assert proc.returncode == 0, proc.stderr
-        output = json.loads(proc.stdout)
-        assert output["status"] == "ok"
-        assert output["offset_seconds"] == pytest.approx(EXPECTED_OFFSET, abs=2)
-        assert [c["file"] for c in output["chapters"]] == list(map(lambda p: str(p.resolve()), paths))
-    assert len(list((tmp_path / "cli-cache").glob("*.npz"))) == 1
-
-
-def test_cli_sync(flight, tmp_path):
-    _, _, paths = flight
-    output = tmp_path / "sync.json"
-    assert main(["sync", *map(str, paths), "--track", str(FIXTURES / "flight.igc"),
-                 "--cache-dir", str(tmp_path / "cache"), "--json", str(output)]) == 0
-    result = json.loads(output.read_text())
-    assert result["status"] == "ok"
-    assert result["offset_seconds"] == pytest.approx(EXPECTED_OFFSET, abs=2)
+        document = json.loads(proc.stdout)
+        assert document["schema_version"] == "2.0.0"
+        assert document["videos"] == [baseline[str(p.resolve())] for p in order]
+    assert len(list((tmp_path / "cache").glob("*.npz"))) == 2
+    assert len(list((tmp_path / "cli-cache").glob("*.npz"))) == 2
 
 
 def test_verification_frames(flight, tmp_path):
     pytest.importorskip("matplotlib")
     if not shutil.which("ffmpeg"):
         pytest.skip("Frame extraction requires ffmpeg")
-    from gps_video_sync.verify import plot_verification
+    from gps_video_sync.verify import plot_verification, _recording_frame
 
-    track, _, paths = flight
-    paths = paths[::-1]
-    telemetry = read_video(paths, cache_dir=tmp_path / "cache")
-    from gps_video_sync.verify import _chapter_frame
-
-    boundary = 8999991 / 30000
-    assert _chapter_frame(telemetry, paths, boundary - 1) == (paths[1].resolve(), boundary - 1)
-    assert _chapter_frame(telemetry, paths, boundary) == (paths[0].resolve(), 0)
-    assert _chapter_frame(telemetry, paths, boundary + 1) == (paths[0].resolve(), 1)
-    result = synchronize(track, telemetry)
-    output = tmp_path / "alignment.png"
-    plot_verification(track, telemetry, result.to_dict(), output,
-                      frames=[boundary - 1, boundary + 1, 0.00001, boundary + 1e-7], videos=paths)
-    assert output.stat().st_size > 0
-    frames = sorted(tmp_path.glob("alignment-frame-*.png"))
-    assert len(frames) == 4
-    assert all(path.read_bytes().startswith(b"\x89PNG") for path in frames)
-    assert not any(re.search(r"\de[-+]\d", path.name) for path in frames)
+    track, recordings, paths = flight
+    for index, telemetry in enumerate(recordings):
+        assert _recording_frame(telemetry, 1) == (paths[index].resolve(), 1)
+        with pytest.raises(ValueError, match="outside"):
+            _recording_frame(telemetry, telemetry.duration)
+        result = synchronize(track, telemetry)
+        output = tmp_path / f"alignment-{index}.png"
+        plot_verification(track, telemetry, result.to_dict(), output, frames=[1, .00001])
+        assert output.read_bytes().startswith(b"\x89PNG")
+        frames = sorted(tmp_path.glob(f"alignment-{index}-*-frame-*.png"))
+        assert len(frames) == 2
+        assert all(path.read_bytes().startswith(b"\x89PNG") for path in frames)
+        assert not any(re.search(r"\de[-+]\d", path.name) for path in frames)
