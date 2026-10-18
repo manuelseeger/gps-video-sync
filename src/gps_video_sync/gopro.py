@@ -19,12 +19,13 @@ import numpy as np
 from scipy.ndimage import uniform_filter1d
 
 from . import mp4
+from ._chapter_order import Chapter, Evidence, PREFIX, STMP_KEYS, clock_evidence, order_chapters
 from .gpmf import number, scaled, streams
 from .models import Telemetry
 
 KEYS = ("ACCL", "GYRO", "GRAV", "CORI", "IORI")
 QUATERNIONS = ("CORI", "IORI")
-CACHE_VERSION = "1.1.0"
+CACHE_VERSION = "1.2.0"
 GPS_EPOCH = datetime(2000, 1, 1, tzinfo=timezone.utc).timestamp()
 
 
@@ -60,11 +61,12 @@ def _gps(fields: dict, times: np.ndarray, key: str) -> tuple[np.ndarray, np.ndar
     return times[good], utc[good]
 
 
-def _chapter(path: Path, base: float) -> tuple[dict, dict, list, list]:
+def _chapter(path: Path) -> Chapter:
     timeline = mp4.read_timeline(path)
     duration = timeline.duration
     data = {key: [] for key in KEYS}
     gps5, gps9 = [], []
+    stmp: dict[str, list[tuple[float, float]]] = {}
     with path.open("rb") as handle:
         for sample in timeline.samples:
             pts, interval = sample.time, sample.duration
@@ -76,6 +78,14 @@ def _chapter(path: Path, base: float) -> tuple[dict, dict, list, list]:
             has_gps9 = False
             for stream in streams(buf):
                 fields = {r.key: r for r in stream}
+                sensor_keys = [key for key in STMP_KEYS if key in fields]
+                if "STMP" in fields and len(sensor_keys) == 1:
+                    try:
+                        stamp = number(fields["STMP"]).ravel()
+                        value = float(stamp[0]) / 1e6 if len(stamp) == 1 else np.nan
+                    except ValueError:
+                        value = np.nan
+                    stmp.setdefault(sensor_keys[0], []).append((pts, value))
                 for key in KEYS:
                     if key not in fields:
                         continue
@@ -85,8 +95,8 @@ def _chapter(path: Path, base: float) -> tuple[dict, dict, list, list]:
                         raise ValueError(f"{key} requires {expected} columns")
                     if not len(values):
                         continue
-                    t = base + pts + np.arange(len(values)) * interval / len(values)
-                    mask = (t >= base) & (t < base + duration)
+                    t = pts + np.arange(len(values)) * interval / len(values)
+                    mask = (t >= 0) & (t < duration)
                     data[key].append(np.column_stack((t[mask], values[mask])))
                 for key, target in (("GPS9", packet_gps9), ("GPS5", packet_gps5)):
                     if key not in fields:
@@ -95,9 +105,9 @@ def _chapter(path: Path, base: float) -> tuple[dict, dict, list, list]:
                     count = fields[key].count
                     if not count:
                         continue
-                    t = base + pts + np.arange(count) * interval / count
+                    t = pts + np.arange(count) * interval / count
                     gt, utc = _gps(fields, t, key)
-                    mask = (gt >= base) & (gt < base + duration)
+                    mask = (gt >= 0) & (gt < duration)
                     if mask.any():
                         target.append((gt[mask], utc[mask]))
             # Do not replace rejected GPS9 fixes with a second GPS5 observation.
@@ -105,8 +115,18 @@ def _chapter(path: Path, base: float) -> tuple[dict, dict, list, list]:
                 gps9.extend(packet_gps9)
             else:
                 gps5.extend(packet_gps5)
-    chapter = {"file": str(path), "start": base, "duration": duration, "packets": len(timeline.samples)}
-    return chapter, data, gps5, gps9
+    gps = gps5 + gps9
+    if gps:
+        pairs = np.concatenate([np.column_stack(pair) for pair in gps])
+        pairs = pairs[np.argsort(pairs[:, 0], kind="stable")]
+        gps_clock = clock_evidence(pairs[:, 0], pairs[:, 1], duration, gps=True)
+    else:
+        gps_clock = Evidence(None, "no valid GPS UTC observations")
+    clocks = {"GPS": gps_clock}
+    for key, observations in stmp.items():
+        times, stamps = np.asarray(observations).T
+        clocks[key] = clock_evidence(times, stamps, duration, gps=False)
+    return Chapter(path, duration, len(timeline.samples), data, gps, clocks)
 
 
 def _resample(blocks: list, grid: np.ndarray, key: str, hz: float) -> np.ndarray | None:
@@ -142,7 +162,7 @@ def _resample(blocks: list, grid: np.ndarray, key: str, hz: float) -> np.ndarray
 
 def _cache_path(paths: list[Path], hz: float, directory: Path) -> Path:
     identity = {"version": CACHE_VERSION, "hz": hz, "files": [
-        [str(p), p.stat().st_size, p.stat().st_mtime_ns] for p in paths]}
+        [str(p), p.stat().st_size, p.stat().st_mtime_ns] for p in sorted(paths)]}
     digest = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
     return directory / f"gopro-{digest}.npz"
 
@@ -187,7 +207,7 @@ def _save_cache(path: Path, result: Telemetry) -> None:
 
 
 class GoProSource:
-    """Read ordered MP4 chapters; absent motion channels are omitted.
+    """Resolve MP4 chapter order from recording clocks; omit absent channels.
 
     Channels have shape (samples, 3), or (samples, 4) for native quaternions.
     A channel absent in one chapter has NaN rows in that chapter. GPS arrays
@@ -202,28 +222,40 @@ class GoProSource:
         if isinstance(paths, (str, Path)) or not paths:
             raise ValueError("Supply a nonempty sequence of chapter paths")
         files = [Path(p).expanduser().resolve() for p in paths]
+        identities = set()
+        for path in sorted(files):
+            stat = path.stat()
+            identity = (stat.st_dev, stat.st_ino)
+            if identity in identities:
+                raise ValueError(PREFIX + f"duplicate input file or alias: {path}")
+            identities.add(identity)
         directory = Path(cache_dir).expanduser() if cache_dir is not None else Path.home() / ".cache" / "gps-video-sync"
         cache = _cache_path(files, hz, directory)
         saved = _load_cache(cache)
         if saved is not None:
             return saved
-        chapters, raw_chapters, gps = [], [], []
-        base = 0.0
-        for path in files:
-            chapter, raw, gps5, gps9 = _chapter(path, base)
-            chapters.append(chapter)
-            raw_chapters.append(raw)
-            gps.extend(gps5 + gps9)
-            base += chapter["duration"]
-        if not any(chapter["packets"] for chapter in chapters):
-            names = ", ".join(path.name for path in files)
+        local = [_chapter(path) for path in sorted(files)]
+        if not any(chapter.packets for chapter in local):
+            names = ", ".join(path.name for path in sorted(files))
             raise ValueError(f"No GoPro telemetry (gpmd) track found in: {names}")
+        local, stmp_key = order_chapters(local)
+        chapters, gps = [], []
+        base = 0.0
+        for chapter in local:
+            utc = chapter.clocks["GPS"].clock
+            stmp = chapter.clocks.get(stmp_key, Evidence(None)).clock if stmp_key else None
+            chapters.append({"file": str(chapter.path), "start": base, "duration": chapter.duration,
+                             "packets": chapter.packets, "utc_start": utc.start if utc else None,
+                             "stmp_start": stmp.start if stmp else None})
+            gps.extend((time + base, stamps) for time, stamps in chapter.gps)
+            base += chapter.duration
         grid = np.arange(0, base, 1 / hz)
         channels = {}
-        for chapter, raw in zip(chapters, raw_chapters):
-            mask = (grid >= chapter["start"]) & (grid < chapter["start"] + chapter["duration"])
+        for metadata, chapter in zip(chapters, local):
+            start = metadata["start"]
+            mask = (grid >= start) & (grid < start + chapter.duration)
             for key in KEYS:
-                values = _resample(raw[key], grid[mask], key, hz)
+                values = _resample(chapter.motion[key], grid[mask] - start, key, hz)
                 if values is None:
                     continue
                 if key not in channels:

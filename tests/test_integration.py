@@ -4,6 +4,7 @@ import re
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 
 import numpy as np
 import pytest
@@ -159,6 +160,29 @@ def test_crops(flight, start, duration, status):
         assert result.offset_seconds == pytest.approx(EXPECTED_OFFSET + start, abs=2)
 
 
+def test_reversed_chapters_api_and_cli(flight, tmp_path):
+    track, expected, paths = flight
+    for order in (paths[::-1], paths):
+        telemetry = read_video(order, cache_dir=tmp_path / "api-cache")
+        assert telemetry.chapters == expected.chapters
+        assert [c["stmp_start"] for c in telemetry.chapters] == pytest.approx([1814.151224, 2114.151224], abs=1e-6)
+        np.testing.assert_array_equal(telemetry.time, expected.time)
+        for key in expected.channels:
+            np.testing.assert_array_equal(telemetry.channels[key], expected.channels[key])
+        result = synchronize(track, telemetry)
+        assert result.status == "ok"
+        assert result.offset_seconds == pytest.approx(EXPECTED_OFFSET, abs=2)
+        proc = subprocess.run([sys.executable, "-m", "gps_video_sync", "sync", *map(str, order),
+                               "--track", str(FIXTURES / "flight.igc"),
+                               "--cache-dir", str(tmp_path / "cli-cache")], capture_output=True, text=True)
+        assert proc.returncode == 0, proc.stderr
+        output = json.loads(proc.stdout)
+        assert output["status"] == "ok"
+        assert output["offset_seconds"] == pytest.approx(EXPECTED_OFFSET, abs=2)
+        assert [c["file"] for c in output["chapters"]] == list(map(lambda p: str(p.resolve()), paths))
+    assert len(list((tmp_path / "cli-cache").glob("*.npz"))) == 1
+
+
 def test_cli_sync(flight, tmp_path):
     _, _, paths = flight
     output = tmp_path / "sync.json"
@@ -175,10 +199,17 @@ def test_verification_frames(flight, tmp_path):
         pytest.skip("Frame extraction requires ffmpeg")
     from gps_video_sync.verify import plot_verification
 
-    track, telemetry, paths = flight
+    track, _, paths = flight
+    paths = paths[::-1]
+    telemetry = read_video(paths, cache_dir=tmp_path / "cache")
+    from gps_video_sync.verify import _chapter_frame
+
+    boundary = 8999991 / 30000
+    assert _chapter_frame(telemetry, paths, boundary - 1) == (paths[1].resolve(), boundary - 1)
+    assert _chapter_frame(telemetry, paths, boundary) == (paths[0].resolve(), 0)
+    assert _chapter_frame(telemetry, paths, boundary + 1) == (paths[0].resolve(), 1)
     result = synchronize(track, telemetry)
     output = tmp_path / "alignment.png"
-    boundary = telemetry.chapters[1]["start"]
     plot_verification(track, telemetry, result.to_dict(), output,
                       frames=[boundary - 1, boundary + 1, 0.00001, boundary + 1e-7], videos=paths)
     assert output.stat().st_size > 0

@@ -24,7 +24,7 @@ requires `ffmpeg` on `PATH`.
 
 ## Align a recording
 
-Pass video chapters in recording order:
+Pass video chapters in any argument order:
 
 ```sh
 gps-video-sync sync GOPR0001.MP4 GP010001.MP4 --track flight.igc --json sync.json
@@ -39,7 +39,21 @@ gps-video-sync verify GOPR0001.MP4 GP010001.MP4 --track flight.igc \
   --result sync.json --output alignment.png --frames 10 120
 ```
 
-All video times use the concatenated chapter timeline. Run
+The GoPro reader resolves recording order from usable GPS UTC or one common
+STMP sensor clock. Filenames and file modification times do not establish order.
+Duplicate inputs, overlapping chapters, unexplained gaps, and uncertain clock
+evidence give an input error. Multiple chapters without a common usable clock
+also give an error. Motion matching does not recover chapter order.
+
+A single chapter needs no ordering clock and can use motion matching without GPS.
+STMP is relative camera time, not UTC or proof of camera identity. Separate
+recordings with indistinguishable continuous clocks cannot be separated.
+Gaps below the clock tolerance can also be indistinguishable from chapter splits.
+See [chapter order limits](docs/reference.md#chapter-order) for the thresholds.
+
+All video times use the resolved concatenated chapter timeline. The API, CLI,
+cache, NPZ and JSON exports, plots, and frame extraction use the same order.
+Frame times refer to this timeline, not argument positions. Run
 `gps-video-sync COMMAND --help` for command options.
 
 Results, `info` output, telemetry exports, and the cache contain absolute
@@ -80,6 +94,7 @@ plugins, telemetry formats, and matching limits.
 ```sh
 pip install -e '.[dev,verify]'
 python -m pytest
+python scripts/check_chapter_order.py
 ```
 
 The integration tests use [bundled fixtures](https://github.com/manuelseeger/gps-video-sync/tree/main/tests/fixtures).
@@ -88,6 +103,9 @@ exclude tests and fixtures. Run the full test suite from a repository checkout.
 Extraction and alignment tests need no external programs. Optional parity tests
 use `ffprobe` 9 or later and have the `ffprobe` marker. Frame tests require `ffmpeg` and
 Matplotlib. To run only unit tests, use `python -m pytest -m 'not integration'`.
+The chapter-order check requires the verification dependencies and `ffmpeg`.
+It checks the real no-GPS fixtures in both orders, cold and shared caches,
+renamed files, reversed modification times, exports, plots, and boundary frames.
 
 ## License
 

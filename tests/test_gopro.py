@@ -136,26 +136,28 @@ def test_all_motion_channels_and_quaternion_signs(tmp_path):
 
 
 def test_chapter_order_actual_duration_and_missing_channels(tmp_path):
-    first = video(tmp_path, "z.mp4", [packet(stream(numeric("ACCL", [[1, 2, 3]])))], duration=1.25)
-    second = video(tmp_path, "a.mp4", [packet(stream(numeric("GYRO", [[4, 5, 6]])))], duration=.75)
+    first = video(tmp_path, "z.mp4", [packet(gps5("240101120000.000"),
+                  stream(numeric("ACCL", [[1, 2, 3]]))), packet(gps5("240101120001.000"))], duration=2.25)
+    second = video(tmp_path, "a.mp4", [packet(gps5("240101120002.250"),
+                   stream(numeric("GYRO", [[4, 5, 6]]))), packet(gps5("240101120003.250"))], duration=1.75)
     result = GoProSource().read([first, second], hz=4, cache_dir=tmp_path / "cache")
     assert [c["file"] for c in result.chapters] == [str(first), str(second)]
-    assert [c["start"] for c in result.chapters] == [0, 1.25]
-    assert [c["duration"] for c in result.chapters] == [1.25, .75]
-    assert len(result.time) == 8
-    assert np.isnan(result.channels["GYRO"][:5]).all()
-    assert np.isnan(result.channels["ACCL"][5:]).all()
+    assert [c["start"] for c in result.chapters] == [0, 2.25]
+    assert [c["duration"] for c in result.chapters] == [2.25, 1.75]
+    assert len(result.time) == 16
+    assert np.isnan(result.channels["GYRO"][:9]).all()
+    assert np.isnan(result.channels["ACCL"][9:]).all()
     assert set(result.channels) == {"ACCL", "GYRO"}
 
 
 def test_gps5_utc_offsets_chapters_and_bad_fixes(tmp_path):
-    first = video(tmp_path, "first.mp4", [packet(gps5()), packet(gps5(fix=2))], duration=2.25,
+    first = video(tmp_path, "first.mp4", [packet(gps5(count=4)), packet(gps5(fix=2))], duration=2.25,
                   start=5, pts=[5.25, 6.25])
-    second = video(tmp_path, "second.mp4", [packet(gps5("240102000001.500"))], duration=1)
+    second = video(tmp_path, "second.mp4", [packet(gps5("240102000001.500"))], duration=1.25)
     result = GoProSource().read([first, second], hz=2, cache_dir=tmp_path / "cache")
     epoch = datetime(2024, 1, 1, 23, 59, 59, 500000, tzinfo=timezone.utc).timestamp()
-    np.testing.assert_allclose(result.gps_time, [.25, .75, 2.25, 2.75])
-    np.testing.assert_allclose(result.gps_utc - epoch, [0, .5, 2, 2.5])
+    np.testing.assert_allclose(result.gps_time, [.25, .5, .75, 1, 2.25, 2.75])
+    np.testing.assert_allclose(result.gps_utc - epoch, [0, .25, .5, .75, 2, 2.5])
     np.testing.assert_allclose(result.gps_utc - result.gps_time, epoch - .25)
     assert result.channels == {}
 
@@ -185,12 +187,11 @@ def test_missing_gpmd_stream(tmp_path):
         GoProSource().read([path], hz=2, cache_dir=tmp_path / "cache")
 
 
-def test_chapter_without_gpmd_is_nan(tmp_path):
+def test_chapter_without_gpmd_cannot_establish_order(tmp_path):
     first = video(tmp_path, "a.mp4", [packet(stream(numeric("ACCL", [[1, 2, 3]])))], duration=1)
     second = video(tmp_path, "b.mp4", [], duration=1)
-    result = GoProSource().read([first, second], hz=2, cache_dir=tmp_path / "cache")
-    assert [c["packets"] for c in result.chapters] == [1, 0]
-    assert np.isnan(result.channels["ACCL"][2:]).all()
+    with pytest.raises(ValueError, match="Cannot establish chapter order: no common usable recording clock"):
+        GoProSource().read([first, second], hz=2, cache_dir=tmp_path / "cache")
 
 
 def test_deep_gpmf_nesting_is_rejected():
@@ -247,10 +248,10 @@ def test_partial_sample_sensor_positions(tmp_path):
     payload = packet(stream(numeric("ACCL", [[1, 2, 3]] * 4)))
     path.write_bytes(build([video_track(deltas=[1001]),
                            Track(deltas=[1001], payloads=[payload], edits=[(1001, 300)])]))
-    chapter, raw, _, _ = gopro._chapter(path, 0)
-    assert chapter["duration"] == 1.001
-    np.testing.assert_allclose(raw["ACCL"][0][:, 0], [.2005, .45075], rtol=0, atol=1e-12)
-    np.testing.assert_array_equal(raw["ACCL"][0][:, 1:], [[1, 2, 3], [1, 2, 3]])
+    chapter = gopro._chapter(path)
+    assert chapter.duration == 1.001
+    np.testing.assert_allclose(chapter.motion["ACCL"][0][:, 0], [.2005, .45075], rtol=0, atol=1e-12)
+    np.testing.assert_array_equal(chapter.motion["ACCL"][0][:, 1:], [[1, 2, 3], [1, 2, 3]])
 
 
 def test_cache_roundtrip_all_fields_and_default_location(tmp_path, monkeypatch):
@@ -311,24 +312,31 @@ def test_old_cache_version_is_ignored(tmp_path, monkeypatch):
 
 
 def test_cache_chapter_order_and_corruption(tmp_path, monkeypatch):
-    first = video(tmp_path, "first.mp4", [packet(gps5())])
-    second = video(tmp_path, "second.mp4", [packet(gps5())])
+    first = video(tmp_path, "first.mp4", [packet(gps5()), packet(gps5("240102000000.500"))])
+    second = video(tmp_path, "second.mp4", [packet(gps5("240102000001.500")),
+                   packet(gps5("240102000002.500"))])
     calls = observe_timeline(monkeypatch)
     cache = tmp_path / "cache"
     source = GoProSource()
     source.read([first, second], cache_dir=cache)
     result = source.read([second, first], cache_dir=cache)
-    assert calls == [first, second, second, first]
-    assert result.chapters[0]["file"] == str(second)
+    assert calls == [first, second]
+    assert result.chapters[0]["file"] == str(first)
+    assert len(list(cache.glob("*.npz"))) == 1
     for item in cache.glob("*.npz"):
         item.write_bytes(b"broken cache")
     source.read([first, second], cache_dir=cache)
-    assert len(calls) == 6
+    assert len(calls) == 4
 
 
 def test_quaternion_continuity_across_chapters_and_low_hz(tmp_path):
-    first = video(tmp_path, "a.mp4", [packet(stream(numeric("CORI", [[1, 0, 0, 0]])))], duration=.25)
-    second = video(tmp_path, "b.mp4", [packet(stream(numeric("CORI", [[-1, 0, 0, 0]])))], duration=.25)
+    def quaternion_chapter(name, origin, sign):
+        return video(tmp_path, name, [packet(stream(numeric("STMP", [origin + index * 100000], "J"),
+                     numeric("CORI", [[sign, 0, 0, 0]]))) for index in range(3)],
+                     duration=.25, pts=[0, .1, .2], intervals=[.1, .1, .05])
+
+    first = quaternion_chapter("a.mp4", 100000000, 1)
+    second = quaternion_chapter("b.mp4", 100250000, -1)
     result = GoProSource().read([first, second], hz=4, cache_dir=tmp_path / "cache")
     np.testing.assert_array_equal(result.channels["CORI"], [[1, 0, 0, 0], [1, 0, 0, 0]])
     result = GoProSource().read([first, second], hz=1, cache_dir=tmp_path / "cache")
