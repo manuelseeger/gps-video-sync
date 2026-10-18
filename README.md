@@ -139,6 +139,9 @@ data gaps, or low motion can produce ambiguous or false matches. Check the plot
 and distinctive events before you use an alignment. Short clips cannot establish
 clock stability.
 
+See the [API and format reference](https://github.com/manuelseeger/gps-video-sync/blob/main/docs/reference.md) for data contracts,
+plugins, telemetry formats, and matching limits.
+
 ## Run the tests
 
 ```sh
@@ -152,11 +155,6 @@ exclude tests and fixtures. Run the full test suite from a repository checkout.
 Extraction and alignment tests need no external programs. Optional parity tests
 use `ffprobe` 9 or later and have the `ffprobe` marker. Frame tests require `ffmpeg` and
 Matplotlib. To run only unit tests, use `python -m pytest -m 'not integration'`.
-
-## Releases
-
-See the [release procedure](https://github.com/manuelseeger/gps-video-sync/blob/main/docs/releasing.md)
-for archive checks, TestPyPI, release approval, and Trusted Publishing.
 
 ## License
 

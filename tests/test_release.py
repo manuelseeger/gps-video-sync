@@ -33,7 +33,7 @@ def archives(tmp_path):
               if name.startswith("gps_video_sync/")}
     source.update({name: b"" for name in (
         ".gitignore", "README.md", "LICENSE", "pyproject.toml", "PKG-INFO",
-        "docs/releasing.md")})
+        "docs/reference.md")})
     source["PKG-INFO"] = metadata
 
     def write():
