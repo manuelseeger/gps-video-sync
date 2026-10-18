@@ -52,7 +52,6 @@ def select_result(document, telemetry):
     entries = document.get("videos")
     if not isinstance(entries, list) or not entries:
         raise ValueError("Sync document needs a nonempty videos list")
-    identities = set()
     for entry in entries:
         if not isinstance(entry, dict) or entry.get("schema_version") != "2.0.0":
             raise ValueError("Malformed saved-result entry")
@@ -61,10 +60,7 @@ def select_result(document, telemetry):
             raise ValueError("Saved-result recording identities must be nonempty")
         if entry.get("status") not in ("ok", "ambiguous", "failed"):
             raise ValueError("Invalid saved-result status")
-        identity = (video, *_timeline(entry))
-        if identity in identities:
-            raise ValueError("Saved-result recording timelines must be unique")
-        identities.add(identity)
+        _timeline(entry)
         for name in ("confidence", "per_feature", "drift"):
             if entry.get(name) is not None and not isinstance(entry[name], dict):
                 raise ValueError(f"Result {name} must be an object")

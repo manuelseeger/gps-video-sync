@@ -38,7 +38,10 @@ def match_videos(track: Track, paths, *, source: str = "gopro", hz: float = 10,
     for path in paths:
         identity = str(path)
         try:
-            identity = str(Path(path).expanduser().resolve())
+            try:
+                identity = str(Path(path).expanduser().resolve())
+            except RuntimeError as exc:
+                raise ValueError(str(exc)) from exc
             telemetry = read_video(path, source=source, hz=hz, cache_dir=cache_dir)
             validate_telemetry(telemetry)
         except (OSError, ValueError, EOFError, zipfile.BadZipFile) as exc:

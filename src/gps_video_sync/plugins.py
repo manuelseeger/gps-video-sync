@@ -28,4 +28,6 @@ def read_video(path: str | Path, *, source: str = "gopro", hz: float = 10,
         raise ValueError("Supply one video path")
     if not math.isfinite(hz) or hz <= 0:
         raise ValueError("hz must be finite and positive")
+    if source not in VIDEO_SOURCES:
+        raise ValueError(f"Unknown or unavailable video source: {source}")
     return VIDEO_SOURCES[source].read(path, hz=hz, cache_dir=cache_dir)

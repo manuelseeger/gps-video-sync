@@ -216,7 +216,8 @@ class GoProSource:
         local = _recording(path)
         if not local.packets:
             raise ValueError(f"No GoPro telemetry (gpmd) track found in: {path.name}")
-        grid = np.arange(0, local.duration, 1 / hz)
+        grid = np.arange(math.ceil(local.duration * hz)) / hz
+        grid = grid[grid < local.duration]
         channels = {}
         for key in KEYS:
             values = _resample(local.motion[key], grid, key, hz)

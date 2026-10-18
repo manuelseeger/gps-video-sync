@@ -62,6 +62,25 @@ def test_expected_file_failure_does_not_block_peer(recordings, tmp_path, damage)
         assert failed.to_dict()["duration"] is None
 
 
+def test_symlink_loop_isolated_from_valid_peer(recordings, tmp_path):
+    track, paths = recordings
+    loop = tmp_path / "loop.npz"
+    loop.symlink_to(loop)
+    expected = match_videos(track, paths[:1], source="npz")[0].to_dict()
+    for order in ([loop, paths[0]], [paths[0], loop]):
+        results = match_videos(track, order, source="npz")
+        failed = next(r for r in results if r.input_file == str(loop))
+        assert failed.status == "failed"
+        assert failed.video == str(loop)
+        assert failed.message
+        assert next(r.to_dict() for r in results if r.input_file == str(paths[0])) == expected
+
+
+def test_unknown_video_source_is_a_boundary_error():
+    with pytest.raises(ValueError, match="^Unknown or unavailable video source: bogus$"):
+        read_video("missing.mp4", source="bogus")
+
+
 def test_shared_validation_precedes_file_errors(recordings, monkeypatch):
     import gps_video_sync
     track, paths = recordings
@@ -216,6 +235,28 @@ def test_saved_result_selection_and_invalid_entries(recordings):
                    [dict(entries[0], status="unknown")], [dict(entries[0], offset_seconds="bad")]):
         with pytest.raises(ValueError):
             select_result(dict(schema_version="2.0.0", videos=videos), read_video(paths[0], source="npz"))
+
+
+def test_saved_result_ignores_unrelated_duplicate_timelines(recordings):
+    track, paths = recordings
+    entries = [r.to_dict() for r in match_videos(track, paths[:2], source="npz")]
+    document = dict(schema_version="2.0.0", videos=[entries[0], entries[0], entries[1]])
+    assert select_result(document, read_video(paths[1], source="npz")) == entries[1]
+    with pytest.raises(ValueError, match="no unique"):
+        select_result(document, read_video(paths[0], source="npz"))
+
+
+@pytest.mark.parametrize("changes", [
+    {"schema_version": "wrong"}, {"video": ""}, {"status": "unknown"},
+    {"duration": -1}, {"confidence": []}, {"per_feature": []}, {"drift": []},
+    {"offset_seconds": "bad"}, {"uncertainty_seconds": -1}, {"clockRate": 0},
+])
+def test_saved_result_validates_unrelated_entries(recordings, changes):
+    track, paths = recordings
+    entries = [r.to_dict() for r in match_videos(track, paths[:2], source="npz")]
+    document = dict(schema_version="2.0.0", videos=[dict(entries[0], **changes), entries[1]])
+    with pytest.raises(ValueError):
+        select_result(document, read_video(paths[1], source="npz"))
 
 
 @pytest.mark.parametrize("changes", [

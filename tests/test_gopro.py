@@ -77,6 +77,34 @@ def observe_timeline(monkeypatch):
     return calls
 
 
+@pytest.mark.parametrize("duration,hz,count", [
+    (16.92, 25, 423), (.29, 100, 29), (1.001, 10, 11),
+    (2, 2.5, 5), (16.92, 10, 170),
+])
+def test_fractional_duration_grid_is_half_open(tmp_path, monkeypatch, duration, hz, count):
+    from gps_video_sync import Track as SyncTrack, match_videos, read_video
+    from gps_video_sync.sync import validate_telemetry
+
+    path = video(tmp_path, "fractional.mp4",
+                 [packet(stream(numeric("ACCL", [[0, 0, 10]] * 10)))], duration=duration)
+    cache = tmp_path / "cache"
+    track = SyncTrack(np.arange(100.), np.zeros(100), np.zeros(100), np.zeros(100))
+    cold = read_video(path, hz=hz, cache_dir=cache)
+    assert len(cold.time) == count
+    assert cold.time[-1] < duration
+    validate_telemetry(cold)
+
+    monkeypatch.setattr(gopro, "_recording", lambda *a: pytest.fail("warm read must use cache"))
+    warm = read_video(path, hz=hz, cache_dir=cache)
+    assert len(warm.time) == count
+    assert warm.time[-1] < duration
+    np.testing.assert_array_equal(warm.time, cold.time)
+    validate_telemetry(warm)
+    result = match_videos(track, [path], hz=hz, cache_dir=cache)[0]
+    assert result.status == "ambiguous"
+    assert result.duration == duration
+
+
 def test_records_endian_padding_and_scale():
     buf = numeric("TEST", [[-2, 256], [123, -32768]], "s")
     buf += record("NAME", "c", 1, 1, b"x") + numeric("LAST", [[0x01020304]], "L")

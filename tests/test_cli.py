@@ -106,6 +106,25 @@ def test_input_errors(args, capsys):
     assert "Traceback" not in err
 
 
+@pytest.mark.parametrize("command", ["info", "telemetry", "verify"])
+def test_unknown_video_source_has_clean_message(tmp_path, capsys, command):
+    options = []
+    output = tmp_path / "output.npz"
+    if command == "telemetry":
+        options = ["--out", str(output)]
+    elif command == "verify":
+        track = tmp_path / "flight.igc"
+        track.write_text("HFDTE010126\nB0000000000000N00000000EA0000000000\n"
+                         "B0016400000000N00000000EA0000000000\n")
+        output = tmp_path / "plot.png"
+        options = ["--track", str(track), "--output", str(output)]
+    assert cli.main([command, "missing.mp4", "--source", "bogus", *options]) == 1
+    captured = capsys.readouterr()
+    assert captured.err == "error: Unknown or unavailable video source: bogus\n"
+    assert captured.out == ""
+    assert not output.exists()
+
+
 def test_syntax_error_exit_one():
     proc = subprocess.run([sys.executable, "-m", "gps_video_sync", "sync", "video.mp4"],
                           capture_output=True, text=True)
