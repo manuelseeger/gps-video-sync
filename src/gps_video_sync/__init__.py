@@ -48,7 +48,6 @@ def match_videos(track: Track, paths, *, source: str = "gopro", hz: float = 10,
             result = SyncResult("failed", video=identity, message=str(exc), date=track.date)
         else:
             result = _synchronize(track, telemetry)
-            result.video = telemetry.video or identity
         result.input_file = identity
         results.append(result)
     return results

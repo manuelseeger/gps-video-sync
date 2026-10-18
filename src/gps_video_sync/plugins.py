@@ -1,3 +1,4 @@
+from dataclasses import replace
 from pathlib import Path
 import math
 from typing import Protocol
@@ -30,4 +31,7 @@ def read_video(path: str | Path, *, source: str = "gopro", hz: float = 10,
         raise ValueError("hz must be finite and positive")
     if source not in VIDEO_SOURCES:
         raise ValueError(f"Unknown or unavailable video source: {source}")
-    return VIDEO_SOURCES[source].read(path, hz=hz, cache_dir=cache_dir)
+    telemetry = VIDEO_SOURCES[source].read(path, hz=hz, cache_dir=cache_dir)
+    if telemetry.video is None:
+        telemetry = replace(telemetry, video=str(Path(path).expanduser().resolve()))
+    return telemetry

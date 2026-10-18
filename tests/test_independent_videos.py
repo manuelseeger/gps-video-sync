@@ -106,6 +106,49 @@ def test_programming_errors_are_not_failed_matches(recordings):
         match_videos(track, paths, source="test-broken")
 
 
+@pytest.fixture
+def unidentified_source(local_timelines, monkeypatch):
+    from gps_video_sync.plugins import VIDEO_SOURCES
+    track, telemetry = local_timelines
+    telemetry.video = None
+
+    class GPSSource:
+        def read(self, path, **kwargs):
+            return telemetry
+
+    monkeypatch.setitem(VIDEO_SOURCES, "test-gps-only", GPSSource())
+    return track, telemetry
+
+
+def test_source_without_identity_uses_canonical_input(unidentified_source, tmp_path, monkeypatch):
+    track, original = unidentified_source
+    monkeypatch.chdir(tmp_path)
+    path = "recording.mp4"
+    expected = str(tmp_path / path)
+    loaded = read_video(path, source="test-gps-only")
+    assert loaded.video == expected
+    result = match_videos(track, [path], source="test-gps-only")[0]
+    assert result.video == expected and result.input_file == expected
+    assert result.status == "ok" and result.offset_seconds == 100
+    assert original.video is None
+
+
+def test_cli_verifies_source_without_identity(unidentified_source, tmp_path, monkeypatch):
+    _, original = unidentified_source
+    monkeypatch.chdir(tmp_path)
+    track = tmp_path / "flight.igc"
+    track.write_text("HFDTE010126\nB0000000000000N00000000EA0000000000\nB0016400000000N00000000EA0000000000\n")
+    saved = tmp_path / "results.json"
+    output = tmp_path / "plot.png"
+    options = ["--source", "test-gps-only", "--track", str(track)]
+    assert main(["sync", "recording.mp4", *options, "--json", str(saved)]) == 0
+    assert json.loads(saved.read_text())["videos"][0]["video"] == str(tmp_path / "recording.mp4")
+    assert main(["verify", "recording.mp4", *options, "--result", str(saved),
+                 "--output", str(output)]) == 0
+    assert output.read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
+    assert original.video is None
+
+
 def test_npz_identity_export_and_slice_roundtrip(tmp_path):
     video = tmp_path / "original.mp4"
     video.touch()
