@@ -26,7 +26,11 @@ of independent `SyncResult` values in input order.
   A slice's synchronization offset refers to the slice's start.
 - `SyncResult` contains recording identity in `video`, status, offset,
   uncertainty, method, confidence, per-feature diagnostics, drift diagnostics,
-  date, and message. Batch results also contain `input_file`, the canonical
+  date, and message. `media_offset_seconds` and `duration` identify the local
+  timeline used for matching. They copy the current telemetry values, including
+  for ambiguous results and failures with valid telemetry. The media offset is
+  `null` when extraction or telemetry validation fails. Duration is `null` when
+  unknown. Batch results also contain `input_file`, the canonical
   input path. For NPZ input, `video` identifies the original recording while
   `input_file` identifies the archive. `to_dict()` uses schema `2.0.0`.
   Direct array-based callers can omit recording identity and duration.
@@ -198,10 +202,16 @@ Expected input and external-tool errors have no Python traceback.
 
 `verify` reads `--result` or synchronizes the single recording.
 A saved document must use schema `2.0.0` and contain a nonempty `videos` list.
-Entries need unique nonempty recording identities and valid statuses.
-Missing, duplicate, malformed, or identity-mismatched entries are rejected.
-The selected entry's `video` must equal the current telemetry's identity.
-An NPZ input therefore selects by original recording identity, not archive path.
+Entries need nonempty recording identities, valid statuses, and timeline
+metadata. Each combination of `video`, `media_offset_seconds`, and `duration`
+must be unique. Different crops of the same recording can share a document.
+The selected entry must match all three current telemetry values exactly.
+An NPZ input selects by original recording and local timeline, not archive path.
+Missing metadata, duplicate timelines, malformed entries, and mismatches are
+rejected. Direct `plot_verification` calls apply the same timeline check.
+`media_offset_seconds` must be finite and nonnegative. Only failed entries can
+use `null` for an unknown timeline, with `duration` also `null`.
+Otherwise, `duration` must be positive and finite or `null` when unknown.
 
 A successful entry needs a finite `offset_seconds` or
 `videoStartUtcSeconds`. `clockRate` must be positive or `null`.

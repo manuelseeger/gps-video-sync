@@ -24,7 +24,9 @@ def fake_matcher(monkeypatch, status="ok"):
     monkeypatch.setattr(cli, "read_track", lambda *a, **kw: Track(
         np.arange(8), np.zeros(8), np.zeros(8), np.arange(8)))
     def match(track, telemetry):
-        return SyncResult(status=status, offset_seconds=3600, video=telemetry.video, message="test result")
+        return SyncResult(status=status, offset_seconds=3600, video=telemetry.video,
+                          media_offset_seconds=telemetry.media_offset_seconds,
+                          duration=telemetry.duration, message="test result")
     monkeypatch.setattr(cli, "synchronize", match)
     monkeypatch.setattr(cli, "match_videos", lambda track, paths, **kw: [
         match(track, cli.read_video(p, source="npz")) for p in paths])
@@ -175,7 +177,7 @@ def test_missing_ffmpeg_is_clean_error(sample, tmp_path, monkeypatch, capsys):
 
 
 def _ok_result(path, **changes):
-    result = SyncResult("ok", offset_seconds=3600).to_dict()
+    result = SyncResult("ok", offset_seconds=3600, media_offset_seconds=0).to_dict()
     result.update(changes)
     path.write_text(json.dumps(dict(schema_version="2.0.0", videos=[result])))
     return path
@@ -228,7 +230,7 @@ def test_frame_paths_from_npz_must_be_local_files(tmp_path, monkeypatch, capsys,
     track = tmp_path / "flight.igc"
     track.write_text("HFDTE010126\nB0100000000000N00000000EA0000000000\n"
                      "B0102000000000N00000000EA0000000000\n")
-    result = _ok_result(tmp_path / "result.json", video=location)
+    result = _ok_result(tmp_path / "result.json", video=location, duration=20)
     code = cli.main(["verify", str(path), "--source", "npz", "--track", str(track), "--result",
                      str(result), "--output", str(tmp_path / "plot.png"), "--frames", "1"])
     assert code == 1

@@ -28,7 +28,25 @@ def _seconds(value):
     return "0.000000" if text == "-0.000000" else text
 
 
-def select_result(document, video):
+def _timeline(result):
+    if "media_offset_seconds" not in result or "duration" not in result:
+        raise ValueError("Result needs media_offset_seconds and duration timeline metadata")
+    offset, duration = result["media_offset_seconds"], result["duration"]
+    if offset is None:
+        if result.get("status") != "failed" or duration is not None:
+            raise ValueError("Only failed results can have an unknown timeline")
+        return None, None
+    offset = _number(offset, "Result media offset")
+    if offset < 0:
+        raise ValueError("Result media offset must be nonnegative")
+    if duration is not None:
+        duration = _number(duration, "Result duration")
+        if duration <= 0:
+            raise ValueError("Result duration must be positive")
+    return offset, duration
+
+
+def select_result(document, telemetry):
     if not isinstance(document, dict) or document.get("schema_version") != "2.0.0":
         raise ValueError("Expected a schema_version 2.0.0 sync document")
     entries = document.get("videos")
@@ -38,12 +56,15 @@ def select_result(document, video):
     for entry in entries:
         if not isinstance(entry, dict) or entry.get("schema_version") != "2.0.0":
             raise ValueError("Malformed saved-result entry")
-        identity = entry.get("video")
-        if not isinstance(identity, str) or not identity or identity in identities:
-            raise ValueError("Saved-result recording identities must be nonempty and unique")
-        identities.add(identity)
+        video = entry.get("video")
+        if not isinstance(video, str) or not video:
+            raise ValueError("Saved-result recording identities must be nonempty")
         if entry.get("status") not in ("ok", "ambiguous", "failed"):
             raise ValueError("Invalid saved-result status")
+        identity = (video, *_timeline(entry))
+        if identity in identities:
+            raise ValueError("Saved-result recording timelines must be unique")
+        identities.add(identity)
         for name in ("confidence", "per_feature", "drift"):
             if entry.get(name) is not None and not isinstance(entry[name], dict):
                 raise ValueError(f"Result {name} must be an object")
@@ -54,9 +75,11 @@ def select_result(document, video):
                 raise ValueError("Result uncertainty must be nonnegative")
         if entry["status"] == "ok":
             _alignment(entry)
-    matches = [entry for entry in entries if entry["video"] == video]
+    current = (telemetry.media_offset_seconds, telemetry.duration)
+    matches = [entry for entry in entries
+               if entry["video"] == telemetry.video and _timeline(entry) == current]
     if len(matches) != 1:
-        raise ValueError(f"Saved result has no unique entry for recording {video}")
+        raise ValueError(f"Saved result has no unique entry for recording timeline {telemetry.video}")
     return matches[0]
 
 
@@ -100,6 +123,8 @@ def plot_verification(track, telemetry, result, output, frames=()):
         raise ValueError("Expected a schema_version 2.0.0 sync result")
     if result.get("video") != telemetry.video:
         raise ValueError("Result recording identity does not match current telemetry")
+    if _timeline(result) != (telemetry.media_offset_seconds, telemetry.duration):
+        raise ValueError("Result local timeline does not match current telemetry")
     offset, rate = _alignment(result)
     requests = [_recording_frame(telemetry, seconds) for seconds in frames]
     output = Path(output)

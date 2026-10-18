@@ -363,8 +363,10 @@ def synchronize(track: Track, telemetry: Telemetry) -> SyncResult:
 
 
 def _synchronize(track: Track, telemetry: Telemetry) -> SyncResult:
+    timeline = dict(media_offset_seconds=telemetry.media_offset_seconds, duration=telemetry.duration)
     if len(telemetry.time) < 2:
-        return SyncResult("failed", message="No telemetry samples", date=track.date, video=telemetry.video)
+        return SyncResult("failed", message="No telemetry samples", date=track.date,
+                          video=telemetry.video, **timeline)
     origin_date = track.date
     gps_rejection = ""
     finite_gps = (np.isfinite(telemetry.gps_utc) & np.isfinite(telemetry.gps_time)
@@ -456,7 +458,7 @@ def _synchronize(track: Track, telemetry: Telemetry) -> SyncResult:
                                          "measured_clock_rate": float(fit.slope),
                                          "seconds_per_hour": float((fit.slope-1)*3600),
                                          "stderr_seconds_per_hour": float(fit.stderr*3600)},
-                                  video=telemetry.video, date=origin_date)
+                                  video=telemetry.video, date=origin_date, **timeline)
     elif len(telemetry.gps_time):
         gps_rejection = "Too few GPS UTC observations or no track date"
     utc, t, tf, vf = build_features(track, telemetry)
@@ -465,6 +467,7 @@ def _synchronize(track: Track, telemetry: Telemetry) -> SyncResult:
     else:
         result = match_features(utc, t, tf, vf)
     result.date, result.video = track.date, telemetry.video
+    result.media_offset_seconds, result.duration = telemetry.media_offset_seconds, telemetry.duration
     if gps_rejection:
         result.confidence["gps_rejected"] = gps_rejection
         if result.status != "ok":

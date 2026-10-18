@@ -6,7 +6,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from gps_video_sync import Track, Telemetry, match_videos, read_video, register_video
+from gps_video_sync import Track, Telemetry, match_videos, read_video, register_video, synchronize
 from gps_video_sync.cli import _export, main
 from gps_video_sync.verify import _recording_frame, plot_verification, select_result
 
@@ -58,6 +58,8 @@ def test_expected_file_failure_does_not_block_peer(recordings, tmp_path, damage)
         assert next(r for r in results if r.input_file == str(paths[0])).to_dict() == good
         failed = next(r for r in results if r.input_file == str(bad))
         assert failed.status == "failed" and failed.video == str(bad) and failed.message
+        assert failed.to_dict()["media_offset_seconds"] is None
+        assert failed.to_dict()["duration"] is None
 
 
 def test_shared_validation_precedes_file_errors(recordings, monkeypatch):
@@ -113,17 +115,131 @@ def test_npz_identity_export_and_slice_roundtrip(tmp_path):
     assert document["time"] == [0., 1., 2., 3., 4., 5.]
 
 
+@pytest.fixture
+def local_timelines(recordings, tmp_path):
+    track, _ = recordings
+    time = np.arange(120.)
+    epoch = datetime(2026, 1, 1, tzinfo=timezone.utc).timestamp()
+    telemetry = Telemetry(time, {}, str(tmp_path / "original.mp4"), 120,
+                          time, epoch + 100 + time)
+    return track, telemetry
+
+
+@pytest.mark.parametrize("case,status,method", [
+    ("gps", "ok", "gps"), ("motion", "ambiguous", "motion"),
+    ("short", "ambiguous", "motion"), ("empty", "failed", "motion"),
+])
+def test_sync_result_retains_local_timeline(local_timelines, tmp_path, case, status, method):
+    track, telemetry = local_timelines
+    telemetry = telemetry.slice(20, 100)
+    if case != "gps":
+        telemetry.gps_time = telemetry.gps_utc = np.empty(0)
+    if case == "short":
+        telemetry.time = np.array([0., .1])
+    elif case == "empty":
+        telemetry.time = np.empty(0)
+    result = synchronize(track, telemetry)
+    assert (result.status, result.method) == (status, method)
+    assert result.media_offset_seconds == 20
+    assert result.duration == 80
+    assert result.to_dict()["media_offset_seconds"] == 20
+    assert result.to_dict()["duration"] == 80
+    archive = tmp_path / "timeline.npz"
+    _export(telemetry, archive)
+    batch = match_videos(track, [archive], source="npz")[0]
+    assert batch.to_dict() == dict(result.to_dict(), input_file=str(archive))
+
+
+@pytest.mark.parametrize("bounds", [(0, 120), (40, 120), (20, 110)])
+def test_plot_rejects_result_for_other_local_timeline(local_timelines, tmp_path, bounds):
+    track, telemetry = local_timelines
+    current = telemetry.slice(20, 100)
+    correct = synchronize(track, current).to_dict()
+    assert correct["offset_seconds"] == 120
+    plot_verification(track, current, correct, tmp_path / "correct.png")
+    assert (tmp_path / "correct.png").read_bytes().startswith(b"\x89PNG")
+    other = synchronize(track, telemetry.slice(*bounds)).to_dict()
+    with pytest.raises(ValueError, match="timeline"):
+        plot_verification(track, current, other, tmp_path / "wrong.png")
+    assert not (tmp_path / "wrong.png").exists()
+
+
+def test_saved_results_distinguish_crops_of_one_recording(local_timelines, tmp_path):
+    track, telemetry = local_timelines
+    paths = [tmp_path / f"crop-{i}.npz" for i in range(3)]
+    for path, bounds in zip(paths, [(20, 100), (40, 120), (20, 110)]):
+        _export(telemetry.slice(*bounds), path)
+    results = match_videos(track, paths, source="npz")
+    document = dict(schema_version="2.0.0", videos=[r.to_dict() for r in results])
+    assert [r.offset_seconds for r in results] == [120, 140, 120]
+    for path, offset, duration in zip(paths, [120, 140, 120], [80, 80, 90]):
+        entry = select_result(document, read_video(path, source="npz"))
+        assert entry["offset_seconds"] == offset
+        assert entry["duration"] == duration
+    with pytest.raises(ValueError, match="unique"):
+        select_result(dict(schema_version="2.0.0", videos=[document["videos"][0]] * 2),
+                      read_video(paths[0], source="npz"))
+
+
+def test_cli_verify_saved_result_requires_current_timeline(local_timelines, tmp_path, capsys):
+    _, telemetry = local_timelines
+    track = tmp_path / "flight.igc"
+    track.write_text("HFDTE010126\nB0000000000000N00000000EA0000000000\nB0016400000000N00000000EA0000000000\n")
+    paths = [tmp_path / f"crop-{i}.npz" for i in range(4)]
+    for path, bounds in zip(paths, [(0, 120), (20, 100), (40, 120), (20, 110)]):
+        _export(telemetry.slice(*bounds), path)
+    full = tmp_path / "full.json"
+    batch = tmp_path / "batch.json"
+    options = ["--source", "npz", "--track", str(track)]
+    assert main(["sync", str(paths[0]), *options, "--json", str(full)]) == 0
+    assert main(["sync", *map(str, paths), *options, "--json", str(batch)]) == 0
+    output = tmp_path / "wrong.png"
+    assert main(["verify", str(paths[1]), *options, "--result", str(full),
+                 "--output", str(output)]) == 1
+    assert not output.exists()
+    assert "no unique" in capsys.readouterr().err
+    for i, path in enumerate(paths):
+        output = tmp_path / f"correct-{i}.png"
+        assert main(["verify", str(path), *options, "--result", str(batch),
+                     "--output", str(output)]) == 0
+        assert output.read_bytes().startswith(b"\x89PNG")
+
+
 def test_saved_result_selection_and_invalid_entries(recordings):
     track, paths = recordings
     entries = [r.to_dict() for r in match_videos(track, paths, source="npz")]
     document = dict(schema_version="2.0.0", videos=entries)
-    assert select_result(document, str(paths[1])) == entries[1]
+    assert select_result(document, read_video(paths[1], source="npz")) == entries[1]
     with pytest.raises(ValueError, match="no unique"):
-        select_result(document, "other.mp4")
+        select_result(document, Telemetry(np.empty(0), {}, "other.mp4"))
     for videos in ([], [entries[0], entries[0]], [None], [{"video": "x"}],
                    [dict(entries[0], status="unknown")], [dict(entries[0], offset_seconds="bad")]):
         with pytest.raises(ValueError):
-            select_result(dict(schema_version="2.0.0", videos=videos), str(paths[0]))
+            select_result(dict(schema_version="2.0.0", videos=videos), read_video(paths[0], source="npz"))
+
+
+@pytest.mark.parametrize("changes", [
+    {"media_offset_seconds": None}, {"media_offset_seconds": -1},
+    {"media_offset_seconds": True}, {"media_offset_seconds": float("nan")},
+    {"media_offset_seconds": 10**400}, {"duration": 0}, {"duration": -1},
+    {"duration": False}, {"duration": []}, {"duration": float("inf")},
+])
+def test_saved_result_rejects_invalid_timeline(local_timelines, changes):
+    track, telemetry = local_timelines
+    entry = dict(synchronize(track, telemetry).to_dict(), **changes)
+    with pytest.raises(ValueError):
+        select_result(dict(schema_version="2.0.0", videos=[entry]), telemetry)
+
+
+@pytest.mark.parametrize("field", ["media_offset_seconds", "duration"])
+def test_saved_result_requires_timeline_metadata(local_timelines, tmp_path, field):
+    track, telemetry = local_timelines
+    entry = synchronize(track, telemetry).to_dict()
+    del entry[field]
+    with pytest.raises(ValueError, match="timeline metadata"):
+        select_result(dict(schema_version="2.0.0", videos=[entry]), telemetry)
+    with pytest.raises(ValueError, match="timeline metadata"):
+        plot_verification(track, telemetry, entry, tmp_path / "plot.png")
 
 
 def test_cli_writes_all_results_and_failure_precedence(recordings, tmp_path, capsys):
@@ -148,7 +264,8 @@ def test_frame_seeks_use_current_recording_not_saved_input(tmp_path, monkeypatch
     telemetry = Telemetry(np.arange(10.), {}, str(video), 10).slice(3, 8)
     track = Track(np.arange(10.), np.zeros(10), np.zeros(10), np.zeros(10))
     from gps_video_sync import SyncResult
-    result = SyncResult("ok", 0, video=str(video), input_file="untrusted.mp4").to_dict()
+    result = SyncResult("ok", 0, video=str(video), input_file="untrusted.mp4",
+                        media_offset_seconds=3, duration=5).to_dict()
     calls = []
     def run(command, **kwargs):
         calls.append(command)
@@ -195,7 +312,7 @@ def test_saved_result_rejects_malformed_status(recordings, status):
     entry = match_videos(track, paths[:1], source="npz")[0].to_dict()
     entry["status"] = status
     with pytest.raises(ValueError, match="status"):
-        select_result(dict(schema_version="2.0.0", videos=[entry]), str(paths[0]))
+        select_result(dict(schema_version="2.0.0", videos=[entry]), read_video(paths[0], source="npz"))
 
 
 def test_invalid_path_isolated_from_valid_peer(recordings):

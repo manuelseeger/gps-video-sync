@@ -122,6 +122,8 @@ def test_crops(flight, start, duration, status):
     track, telemetry, _ = flight
     result = synchronize(track, telemetry[0].slice(start, start + duration))
     assert result.status == status
+    assert result.media_offset_seconds == start
+    assert result.duration == duration
     if status == "ambiguous":
         assert result.offset_seconds is None
     else:

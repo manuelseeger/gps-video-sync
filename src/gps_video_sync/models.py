@@ -49,6 +49,8 @@ class SyncResult:
     input_file: str | None = None
     date: date | None = None
     message: str = ""
+    media_offset_seconds: float | None = None
+    duration: float | None = None
 
     @property
     def video_start_utc(self) -> str | None:

@@ -119,7 +119,7 @@ def main(argv=None):
         else:
             from .verify import plot_verification, select_result
             telemetry = _telemetry(args)
-            result = (select_result(json.loads(args.result.read_text()), telemetry.video)
+            result = (select_result(json.loads(args.result.read_text()), telemetry)
                       if args.result else synchronize(track, telemetry).to_dict())
             results = [result]
             if result["status"] == "ok":
