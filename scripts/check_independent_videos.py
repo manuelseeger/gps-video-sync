@@ -1,4 +1,3 @@
-"""Check independent API and CLI matches, exports, plots, and local frames."""
 from datetime import date, datetime, timezone
 from itertools import permutations
 import json
@@ -81,7 +80,7 @@ def main():
     track = read_track(FIXTURES / "flight.igc")
     paths = [FIXTURES / "chapter-01.mp4", FIXTURES / "chapter-02.mp4"]
     with TemporaryDirectory(prefix="independent-videos-") as directory:
-        work = Path(directory)
+        work = Path(directory).resolve()
         baseline = {r.video: r.to_dict() for r in match_videos(track, paths, cache_dir=work / "baseline")}
         for result, offset in zip(baseline.values(), [36160.112, 36460.112]):
             assert result["status"] == "ok" and result["method"] == "motion"

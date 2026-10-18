@@ -149,6 +149,127 @@ def test_cli_verifies_source_without_identity(unidentified_source, tmp_path, mon
     assert original.video is None
 
 
+def test_fractional_slice_masks_local_times_and_aligned_data(tmp_path):
+    time = np.arange(600) / 10
+    epoch = datetime(2026, 1, 1, tzinfo=timezone.utc).timestamp()
+    track = Track(np.arange(1000.), np.zeros(1000), np.zeros(1000), np.zeros(1000), date(2026, 1, 1))
+    telemetry = Telemetry(time, {"GYRO": np.column_stack([np.arange(600)] * 3)},
+                          str(tmp_path / "original.mp4"), 60., time, epoch + 100 + time)
+    start, end = 24 * .1, 219 * .1
+    cropped = telemetry.slice(start, end)
+    assert cropped.duration == end - start == 19.5
+    assert cropped.media_offset_seconds == start
+    assert len(cropped.time) == 194
+    assert cropped.time[-1] < 19.5
+    assert cropped.gps_time[-1] < 19.5
+    np.testing.assert_array_equal(cropped.channels["GYRO"][:, 0], np.arange(25, 219))
+    np.testing.assert_array_equal(cropped.gps_utc, telemetry.gps_utc[25:219])
+    np.testing.assert_array_equal(cropped.time, telemetry.time[25:219] - start)
+    np.testing.assert_array_equal(cropped.gps_time, telemetry.gps_time[25:219] - start)
+    for item, offset in ((cropped, start), (cropped.slice(.3, 18.8), start + .3)):
+        assert item.time[-1] < item.duration and item.gps_time[-1] < item.duration
+        assert item.media_offset_seconds == offset
+        archive = tmp_path / f"crop-{offset}.npz"
+        _export(item, archive)
+        restored = read_video(archive, source="npz")
+        for field in ("time", "gps_time", "gps_utc"):
+            np.testing.assert_array_equal(getattr(restored, field), getattr(item, field))
+        np.testing.assert_array_equal(restored.channels["GYRO"], item.channels["GYRO"])
+        result = synchronize(track, restored)
+        assert result.status == "ok" and result.offset_seconds == pytest.approx(100 + offset)
+        assert result.duration == item.duration and result.media_offset_seconds == offset
+
+
+@pytest.mark.parametrize("duplicate", ["path", "symlink", "export"])
+def test_duplicate_inputs_keep_first_timeline_selectable(local_timelines, tmp_path, duplicate):
+    track, telemetry = local_timelines
+    first, second, peer = [tmp_path / f"{name}.npz" for name in ("first", "second", "peer")]
+    _export(telemetry, first)
+    if duplicate == "path":
+        second = first
+    elif duplicate == "symlink":
+        second.symlink_to(first)
+    else:
+        _export(telemetry, second)
+    _export(Telemetry(telemetry.time, {}, str(tmp_path / "peer.mp4"), 120,
+                      telemetry.gps_time, telemetry.gps_utc + 200), peer)
+    baseline = match_videos(track, [first, peer], source="npz")
+    results = match_videos(track, [first, second, peer], source="npz")
+    assert results[0].to_dict() == baseline[0].to_dict()
+    assert results[2].to_dict() == baseline[1].to_dict()
+    failed = results[1]
+    assert failed.status == "failed" and "duplicate" in failed.message.lower()
+    assert failed.video == failed.input_file == str(second.resolve())
+    assert failed.media_offset_seconds is None and failed.duration is None
+    document = dict(schema_version="2.0.0", videos=[r.to_dict() for r in results])
+    assert select_result(document, read_video(first, source="npz")) == results[0].to_dict()
+    assert select_result(document, read_video(peer, source="npz")) == results[2].to_dict()
+    igc = tmp_path / "flight.igc"
+    igc.write_text("HFDTE010126\nB0000000000000N00000000EA0000000000\nB0016400000000N00000000EA0000000000\n")
+    saved = tmp_path / "results.json"
+    options = ["--source", "npz", "--track", str(igc)]
+    assert main(["sync", *map(str, [first, second, peer]), *options, "--json", str(saved)]) == 1
+    for path in (first, peer):
+        output = tmp_path / f"{path.stem}.png"
+        assert main(["verify", str(path), *options, "--result", str(saved), "--output", str(output)]) == 0
+        assert output.read_bytes().startswith(b"\x89PNG")
+
+
+def test_duplicate_path_is_rejected_before_read(recordings, monkeypatch):
+    import gps_video_sync
+    track, paths = recordings
+    original = gps_video_sync.read_video
+    reads = []
+    def read(path, **kwargs):
+        if path in reads:
+            pytest.fail("duplicate path reached the source")
+        reads.append(path)
+        return original(path, **kwargs)
+    monkeypatch.setattr(gps_video_sync, "read_video", read)
+    results = match_videos(track, [paths[0], paths[0], paths[1]], source="npz")
+    assert [r.status for r in results] == ["ok", "failed", "ok"]
+    assert [r.offset_seconds for r in results] == [100, None, 600]
+
+
+def test_failed_outcome_does_not_reserve_timeline(local_timelines, tmp_path):
+    track, telemetry = local_timelines
+    first, second = tmp_path / "first.npz", tmp_path / "second.npz"
+    _export(telemetry, first)
+    _export(telemetry, second)
+    telemetry.time = telemetry.gps_time = telemetry.gps_utc = np.empty(0)
+    _export(telemetry, first)
+    results = match_videos(track, [first, second], source="npz")
+    assert [r.status for r in results] == ["failed", "ok"]
+    assert results[1].offset_seconds == 100
+    document = dict(schema_version="2.0.0", videos=[r.to_dict() for r in results])
+    loaded = read_video(second, source="npz")
+    assert select_result(document, loaded) == results[1].to_dict()
+    for index in (0, 1):
+        with pytest.raises(ValueError, match="no unique"):
+            select_result(dict(document, videos=[document["videos"][index]] * 2), loaded)
+    assert select_result(dict(document, videos=[document["videos"][0]]), loaded)["status"] == "failed"
+    assert select_result(dict(document, videos=list(reversed(document["videos"]))), loaded)["status"] == "ok"
+    saved = tmp_path / "results.json"
+    saved.write_text(json.dumps(document))
+    igc = tmp_path / "flight.igc"
+    igc.write_text("HFDTE010126\nB0000000000000N00000000EA0000000000\nB0016400000000N00000000EA0000000000\n")
+    plot = tmp_path / "verified.png"
+    assert main(["verify", str(second), "--source", "npz", "--track", str(igc),
+                 "--result", str(saved), "--output", str(plot)]) == 0
+    assert plot.read_bytes().startswith(b"\x89PNG")
+
+
+@pytest.mark.parametrize("error", [ValueError("matcher defect"), RuntimeError("matcher defect")])
+def test_matcher_errors_propagate(recordings, monkeypatch, error):
+    from gps_video_sync import sync
+    track, paths = recordings
+    def broken(*args):
+        raise error
+    monkeypatch.setattr(sync, "_synchronize", broken)
+    with pytest.raises(type(error), match="matcher defect"):
+        match_videos(track, paths, source="npz")
+
+
 def test_npz_identity_export_and_slice_roundtrip(tmp_path):
     video = tmp_path / "original.mp4"
     video.touch()

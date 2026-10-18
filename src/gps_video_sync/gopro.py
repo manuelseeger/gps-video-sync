@@ -1,8 +1,4 @@
-"""GoPro motion and GPS UTC on one recording's local timeline.
-
-MP4 sample tables give GPMF timing and file positions. Motion retains native
-camera axes; GPS times are Unix UTC seconds.
-"""
+"""Motion retains native camera axes. GPS times are Unix UTC seconds."""
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -26,6 +22,7 @@ from .sync import validate_telemetry
 KEYS = ("ACCL", "GYRO", "GRAV", "CORI", "IORI")
 QUATERNIONS = ("CORI", "IORI")
 CACHE_VERSION = "2.0.0"
+MAX_GRID_SAMPLES = 1_000_000
 GPS_EPOCH = datetime(2000, 1, 1, tzinfo=timezone.utc).timestamp()
 
 
@@ -156,12 +153,23 @@ def _cache_path(path: Path, hz: float, directory: Path) -> Path:
     return directory / f"gopro-{digest}.npz"
 
 
-def _load_cache(path: Path) -> Telemetry | None:
+def _grid_samples(duration: float, hz: float) -> int:
+    try:
+        samples = duration * hz
+    except OverflowError:
+        samples = math.inf
+    if not math.isfinite(samples) or samples > MAX_GRID_SAMPLES:
+        raise ValueError(f"GoPro resampling exceeds {MAX_GRID_SAMPLES:,} samples; lower hz")
+    return math.ceil(samples)
+
+
+def _load_cache(path: Path, hz: float) -> Telemetry | None:
     try:
         with np.load(path, allow_pickle=False) as saved:
             meta = json.loads(str(saved["metadata"].item()))
             if meta["version"] != CACHE_VERSION or any(k not in KEYS for k in meta["channels"]):
                 return None
+            _grid_samples(meta["duration"], hz)
             result = Telemetry(saved["time"], {k: saved[k] for k in meta["channels"]},
                                meta["video"], meta["duration"], saved["gps_time"], saved["gps_utc"])
             if result.time.ndim != 1 or result.gps_time.ndim != 1 or result.gps_utc.shape != result.gps_time.shape:
@@ -210,13 +218,13 @@ class GoProSource:
         path = Path(path).expanduser().resolve()
         directory = Path(cache_dir).expanduser() if cache_dir is not None else Path.home() / ".cache" / "gps-video-sync"
         cache = _cache_path(path, hz, directory)
-        saved = _load_cache(cache)
+        saved = _load_cache(cache, hz)
         if saved is not None and saved.video == str(path) and saved.duration is not None:
             return saved
         local = _recording(path)
         if not local.packets:
             raise ValueError(f"No GoPro telemetry (gpmd) track found in: {path.name}")
-        grid = np.arange(math.ceil(local.duration * hz)) / hz
+        grid = np.arange(_grid_samples(local.duration, hz)) / hz
         grid = grid[grid < local.duration]
         channels = {}
         for key in KEYS:

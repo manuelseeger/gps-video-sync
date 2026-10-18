@@ -105,6 +105,66 @@ def test_fractional_duration_grid_is_half_open(tmp_path, monkeypatch, duration, 
     assert result.duration == duration
 
 
+@pytest.mark.parametrize("duration,hz", [(4294967294, 10), (2, 500000.5), (2, 1e308)])
+def test_oversized_grid_rejected_before_allocation(tmp_path, monkeypatch, duration, hz):
+    payload = packet(stream(numeric("ACCL", [[0, 0, 10]])))
+    path = tmp_path / "oversized.mp4"
+    path.write_bytes(build([video_track(scale=1, deltas=[duration]),
+                            Track(payloads=[payload])]))
+    arange = np.arange
+    def bounded_arange(stop, *args, **kwargs):
+        if stop > 1_000_000:
+            pytest.fail("oversized grid allocation attempted")
+        return arange(stop, *args, **kwargs)
+    monkeypatch.setattr(np, "arange", bounded_arange)
+    with pytest.raises(ValueError, match="1,000,000"):
+        GoProSource().read(path, hz=hz, cache_dir=tmp_path / "cache")
+
+
+def test_oversized_recording_isolated_from_valid_peer(tmp_path, monkeypatch):
+    from gps_video_sync import Track as SyncTrack, match_videos
+    payload = packet(stream(numeric("ACCL", [[0, 0, 10]])))
+    bad = tmp_path / "oversized.mp4"
+    bad.write_bytes(build([video_track(scale=1, deltas=[4294967294]),
+                           Track(payloads=[payload])]))
+    good = video(tmp_path, "good.mp4", [payload], duration=1)
+    track = SyncTrack(np.arange(100.), np.zeros(100), np.zeros(100), np.zeros(100))
+    cache = tmp_path / "cache"
+    baseline = match_videos(track, [good], cache_dir=cache)[0].to_dict()
+    arange = np.arange
+    def bounded_arange(stop, *args, **kwargs):
+        if stop > 1_000_000:
+            pytest.fail("oversized grid allocation attempted")
+        return arange(stop, *args, **kwargs)
+    monkeypatch.setattr(np, "arange", bounded_arange)
+    for order in ([bad, good], [good, bad]):
+        results = match_videos(track, order, cache_dir=cache)
+        assert next(r.to_dict() for r in results if r.video == str(good)) == baseline
+        failed = next(r for r in results if r.video == str(bad))
+        assert failed.status == "failed" and "1,000,000" in failed.message
+        assert failed.duration is None and failed.media_offset_seconds is None
+
+
+@pytest.mark.parametrize("duration", [200000, float("inf"), 10**400])
+def test_oversized_cache_metadata_rejected_before_sample_arrays(tmp_path, monkeypatch, duration):
+    payload = packet(stream(numeric("ACCL", [[0, 0, 10]])))
+    path = video(tmp_path, "cached.mp4", [payload], duration=2)
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    saved = gopro._cache_path(path, 10., cache)
+    metadata = dict(version=gopro.CACHE_VERSION, channels=[], video=str(path), duration=duration)
+    np.savez(saved, metadata=json.dumps(metadata), time=[0.], gps_time=[], gps_utc=[])
+    getitem = np.lib.npyio.NpzFile.__getitem__
+    def metadata_only(self, key):
+        if key != "metadata":
+            pytest.fail("oversized cache loaded sample arrays")
+        return getitem(self, key)
+    monkeypatch.setattr(np.lib.npyio.NpzFile, "__getitem__", metadata_only)
+    result = GoProSource().read(path, hz=10, cache_dir=cache)
+    assert result.duration == 2 and len(result.time) == 20
+    assert list(result.channels) == ["ACCL"]
+
+
 def test_records_endian_padding_and_scale():
     buf = numeric("TEST", [[-2, 256], [123, -32768]], "s")
     buf += record("NAME", "c", 1, 1, b"x") + numeric("LAST", [[0x01020304]], "L")

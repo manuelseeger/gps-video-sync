@@ -74,6 +74,7 @@ def select_result(document, telemetry):
     current = (telemetry.media_offset_seconds, telemetry.duration)
     matches = [entry for entry in entries
                if entry["video"] == telemetry.video and _timeline(entry) == current]
+    matches = [entry for entry in matches if entry["status"] != "failed"] or matches
     if len(matches) != 1:
         raise ValueError(f"Saved result has no unique entry for recording timeline {telemetry.video}")
     return matches[0]

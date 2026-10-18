@@ -29,11 +29,15 @@ class Telemetry:
             raise ValueError("Slice needs finite bounds with 0 <= start < end")
         if self.duration is not None and end > self.duration:
             raise ValueError("Slice end exceeds recording duration")
-        mask = (self.time >= start) & (self.time < end)
-        gps = (self.gps_time >= start) & (self.gps_time < end)
-        return Telemetry(self.time[mask] - start,
+        duration = end - start
+        time, gps_time = self.time - start, self.gps_time - start
+        mask = ((self.time >= start) & (self.time < end)
+                & (time >= 0) & (time < duration))
+        gps = ((self.gps_time >= start) & (self.gps_time < end)
+               & (gps_time >= 0) & (gps_time < duration))
+        return Telemetry(time[mask],
                          {k: v[mask] for k, v in self.channels.items()}, self.video,
-                         end - start, self.gps_time[gps] - start, self.gps_utc[gps],
+                         duration, gps_time[gps], self.gps_utc[gps],
                          self.media_offset_seconds + start)
 
 @dataclass

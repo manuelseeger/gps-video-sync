@@ -37,7 +37,7 @@ telemetry = Telemetry(time, {}, gps_time=time, gps_utc=epoch + 3600 + time)
 result = synchronize(track, telemetry)
 assert result.status == "ok" and abs(result.offset_seconds - 3600) < 0.01
 with tempfile.TemporaryDirectory() as temporary:
-    root = Path(temporary)
+    root = Path(temporary).resolve()
     igc = root / "synthetic.igc"
     igc.write_text("HFDTE010126\nB0100000000000N00000000EA0000000000\n"
                    "B0102000000000N00000000EA0000000000\n")

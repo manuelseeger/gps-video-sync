@@ -44,6 +44,11 @@ per-file result. Expected extraction and invalid-telemetry errors produce
 `failed` results for that file. Programming errors propagate.
 Insufficient motion evidence produces an `ambiguous` result with a reason.
 There is no automatic joining of split recordings.
+Repeated canonical input paths fail before extraction. Once a timeline has an
+`ok` or `ambiguous` result, other inputs with the same `video`,
+`media_offset_seconds`, and `duration` receive a per-file duplicate failure.
+These failures use the canonical input identity and have `null` media offset
+and duration. Distinct crops remain separate timelines.
 
 The result uses this mapping:
 
@@ -92,6 +97,10 @@ Sample times follow ISO edit mapping without a snap to packet boundaries:
 ```text
 sample_time = leading_empty_seconds + (composition_ticks - media_time) / track_scale - video_origin
 ```
+
+GoPro resampling permits at most 1,000,000 grid samples per recording.
+The source raises `ValueError` before grid allocation when `duration * hz` is
+nonfinite or exceeds this limit. The limit also applies to cached telemetry.
 
 A video with no `gpmd` samples raises `ValueError`. Missing channels are omitted.
 
@@ -203,9 +212,11 @@ Expected input and external-tool errors have no Python traceback.
 `verify` reads `--result` or synchronizes the single recording.
 A saved document must use schema `2.0.0` and contain a nonempty `videos` list.
 Entries need nonempty recording identities, valid statuses, and timeline
-metadata. Exactly one entry must match the current telemetry's `video`,
-`media_offset_seconds`, and `duration` values. Different crops of the same
-recording can share a document. Unrelated timelines need not be unique.
+metadata. Selection matches the current telemetry's `video`,
+`media_offset_seconds`, and `duration` values. If any matching entry has status
+`ok` or `ambiguous`, selection ignores matching `failed` entries. Exactly one
+entry must remain. Different crops of the same recording can share a document.
+Unrelated timelines need not be unique.
 An NPZ input selects by original recording and local timeline, not archive path.
 Missing metadata, duplicate matches for the current timeline, malformed entries,
 and mismatches are rejected.

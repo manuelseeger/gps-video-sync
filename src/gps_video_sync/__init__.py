@@ -35,6 +35,8 @@ def match_videos(track: Track, paths, *, source: str = "gopro", hz: float = 10,
     if not paths or any(not isinstance(p, (str, Path)) for p in paths):
         raise ValueError("Supply a nonempty sequence of video paths")
     results = []
+    seen_paths = set()
+    accepted_timelines = set()
     for path in paths:
         identity = str(path)
         try:
@@ -42,12 +44,20 @@ def match_videos(track: Track, paths, *, source: str = "gopro", hz: float = 10,
                 identity = str(Path(path).expanduser().resolve())
             except RuntimeError as exc:
                 raise ValueError(str(exc)) from exc
+            if identity in seen_paths:
+                raise ValueError("Duplicate input path")
+            seen_paths.add(identity)
             telemetry = read_video(path, source=source, hz=hz, cache_dir=cache_dir)
             validate_telemetry(telemetry)
+            timeline = (telemetry.video, telemetry.media_offset_seconds, telemetry.duration)
+            if timeline in accepted_timelines:
+                raise ValueError("Duplicate recording timeline")
         except (OSError, ValueError, EOFError, zipfile.BadZipFile) as exc:
             result = SyncResult("failed", video=identity, message=str(exc), date=track.date)
         else:
             result = _synchronize(track, telemetry)
+            if result.status != "failed":
+                accepted_timelines.add(timeline)
         result.input_file = identity
         results.append(result)
     return results

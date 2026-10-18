@@ -1,4 +1,3 @@
-"""Pickle-free telemetry archives for one recording."""
 from pathlib import Path
 import json
 
