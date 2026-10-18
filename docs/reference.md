@@ -51,8 +51,9 @@ median fix intervals unfilled. GPS course below 3 m/s is excluded.
 
 ## GoPro extraction
 
-The extractor accepts LRV and MP4 chapters in recording order. The native MP4
-reader inspects `moov` sample tables without reading media payloads. It supports
+The extractor accepts LRV and MP4 chapters in any argument order. Recording
+clocks establish chapter order before resampling. The native MP4 reader inspects
+`moov` sample tables without reading media payloads. It supports
 `stts`, `ctts`, `stsz`, `stz2`, `stsc`, `stco`, and `co64`. The extractor reads
 only the selected `gpmd` payloads at their validated positions inside `mdat`.
 The source file does not change. Extraction needs no external programs.
@@ -60,7 +61,8 @@ The source file does not change. Extraction needs no external programs.
 Chapter duration uses the first positive value from the video edit-list total,
 known `mdhd` duration, `stts` duration total, or known `mvhd` duration.
 The edit-list total includes leading empty edits. All-ones header durations
-mean unknown. Chapter offsets use these durations in recording order.
+mean unknown. Chapter offsets are prefix sums of these durations in the resolved
+recording order. Native observations stay chapter-local until that order is accepted.
 
 Sample times follow ISO edit mapping without a snap to packet boundaries:
 
@@ -69,7 +71,8 @@ sample_time = leading_empty_seconds + (composition_ticks - media_time) / track_s
 ```
 
 A video with no `gpmd` samples in any chapter raises `ValueError`. A chapter
-without `gpmd` samples has `packets` 0 and NaN channel rows.
+without recording-clock evidence cannot be part of a multi-chapter recording.
+A channel missing from an otherwise ordered chapter has NaN rows.
 
 `ctts` version 0 offsets are unsigned. Version 1 offsets are signed.
 The video origin is zero with a populated video edit list. Otherwise it is
@@ -116,14 +119,99 @@ GPS9 UTC days and seconds, or GPS5 with GPSU timestamps, provide absolute time.
 GPS9 takes priority. Only 3D fixes are used. File creation dates and the STMP
 sensor clock are not UTC references.
 
-The default cache is `~/.cache/gps-video-sync`. Keys include ordered absolute
-paths, file sizes, nanosecond modification times, sample rate, and extractor
-cache version. Writes are atomic. An unavailable cache does not stop extraction.
-Cache files can contain GPS coordinates and times.
+### Chapter order
 
-Chapter metadata `file` holds the absolute path of each chapter. Results,
-`info` output, telemetry exports, and cache files include this metadata. The
-paths can show user names and directory names. Remove or replace `chapters`
+A single chapter needs no ordering evidence. It retains GPS synchronization and
+motion fallback. For multiple chapters, one clock domain must cover every chapter.
+Usable GPS UTC and usable STMP each establish an order independently. If both
+cover the set, both must be continuous and their orders must agree. Partial GPS
+coverage cannot fill missing STMP evidence, or the reverse. Once a complete clock
+domain resolves the order, usable partial GPS or selected STMP evidence can reject
+a contradiction. Partial evidence never establishes order. Motion values do not
+establish chapter order.
+
+GPS evidence uses the valid native GPS observations. STMP evidence uses one
+common sensor stream, selected in this priority order: `CORI`, `IORI`, `GRAV`,
+`ACCL`, `GYRO`. Only streams with one recognized sensor key are candidates.
+The first common candidate must pass validation in every chapter to establish
+order. If GPS covers every chapter, usable clocks from that selected STMP stream
+still check consistency. If no STMP stream is common to every chapter, the
+first priority stream with usable clocks in at least two chapters can check
+partial consistency. It cannot establish order. Other sensor STMP domains are
+not combined with the selected stream or used to repair it.
+
+The private policy constants are in `gps_video_sync._chapter_order`:
+
+- GPS needs at least two observations. STMP needs at least three packet timestamps.
+  Each clock must span at least 0.1 seconds of local MP4 time. All timestamps
+  must be finite, and clock times must be nonnegative. Local time and clock time
+  must strictly increase.
+- Each observation estimates a chapter start as `clock_time - local_time`.
+  STMP microseconds are converted to seconds first. The start estimate is the
+  median. The full offset spread must be at most 0.1 seconds for GPS and
+  0.02 seconds for STMP. Every observation participates, so a median or a line
+  fit cannot hide a larger step, reset, or outlier.
+- The least-squares clock rate must differ from 1 by at most
+  `0.002 + spread_limit / observed_span`. GPS UTC must be in years 1970 to 9998.
+  The ordering model uses constant offsets. More than 0.1 seconds of accumulated
+  GPS drift within one chapter needs a usable STMP clock for multi-chapter input.
+  Single-chapter GPS synchronization retains its separate drift checks.
+- STMP packet gaps must be at most 2 seconds. The unobserved span at either
+  chapter boundary must be at most 1.1 seconds.
+- Clock reach starts as the largest absolute offset deviation from the median.
+  Both clocks add `(0.002 + spread_limit / observed_span) * extrapolation` seconds.
+  GPS also adds 0.05 seconds. Extrapolation is the larger unobserved distance at
+  either chapter boundary. GPS reach above 1 second is unusable.
+- At each junction, `delta = next_clock_start - (clock_start + MP4_duration)`.
+  Acceptance requires `abs(delta) + left_reach + right_reach` to be at most
+  0.5 seconds for GPS or 0.1 seconds for STMP. Comparisons of spreads and
+  junctions allow 1 microsecond for floating-point rounding.
+  Every chapter duration must exceed twice the applicable junction tolerance.
+- A partial clock domain needs at least two usable chapter clocks to contradict
+  the resolved timeline. Each clock's possible recording origin is its start
+  minus the chapter's resolved prefix duration, with its reach on either side.
+  Partial evidence contradicts the timeline only if the largest lower bound
+  exceeds the smallest upper bound by more than the domain's junction tolerance,
+  plus 1 microsecond. Uncertainty that prevents corroboration does not itself
+  prove a contradiction.
+
+These are conservative engineering bounds, not camera identity guarantees.
+The bundled no-GPS fixtures have continuous STMP clocks and less than 5 ms of
+native sensor offset spread. Synthetic tests cover jitter, sparse observations,
+clock steps, resets, gaps, overlaps, and conflicting GPS and STMP orders.
+The repository has no real multi-chapter GPS fixture. The GPS bounds have
+synthetic coverage, not calibration against a real camera GPS recording.
+A restart gap within the junction tolerance can be indistinguishable from a
+continuous split. STMP is not UTC and does not prove which camera recorded a
+chapter. Different devices or recordings with indistinguishable continuous
+clocks remain a limit.
+
+Missing, malformed, sparse, inconsistent, or ambiguous evidence gives
+`ValueError` with the prefix `Cannot establish chapter order: `. Diagnostics
+identify the clock and paths. Overlaps include possible copies or simultaneous
+recordings. Gaps include separate recordings or missing chapters. Resolved paths,
+symlinks, and hard links to the same file are rejected before cache lookup.
+Copies with trustworthy identical clock ranges fail as overlaps. Equal motion
+values alone do not prove duplicate footage. A stationary pair with continuous
+clocks remains valid. No usable common clock gives an error even when the caller
+supplies the intended order. One chapter remains available for motion fallback.
+
+### Cache and chapter metadata
+
+The default cache is `~/.cache/gps-video-sync`. Keys include the canonical set of
+absolute paths, file sizes, nanosecond modification times, sample rate, and
+extractor cache version `1.2.0`. This canonical set is only a cache identity,
+not chronology evidence. Every input permutation shares the same resolved
+metadata and arrays. Size or modification-time changes invalidate the key.
+Writes are atomic. Corrupt caches are rebuilt. An unavailable cache does not
+stop extraction. Cache files can contain GPS coordinates and times.
+
+Chapter metadata `file` holds the absolute path of each chapter. `start` and
+`duration` describe the resolved global timeline. `utc_start` and `stmp_start`
+contain validated chapter clock starts, or `null` when unavailable. STMP starts
+refer only to the selected sensor domain. Results, `info` output, telemetry
+exports, and cache files include this metadata. The paths can show user names
+and directory names. Remove or replace `chapters`
 before you share these files. Frame extraction needs chapter paths that are
 local files on the current computer.
 
@@ -173,7 +261,10 @@ when both are absent or `null`, the clock rate is 1. Invalid values give exit
 code 1. Its plot compares normalized
 track and video motion features on the mapped UTC axis. The plot is a visual
 check, not a confidence score. Frame PNGs are saved beside the plot.
-A result without an offset cannot be plotted.
+A result without an offset cannot be plotted. `verify --result` reads the videos
+again and uses the reader's resolved chapter paths and bounds for frames, not
+chapter metadata from the saved result. A chapter boundary selects the next
+chapter. The total video duration is outside the frame interval.
 
 `--source npz` is a CLI-only adapter for one pickle-free NPZ file. The fields are
 `time`, channel arrays under their channel names, optional matching 1-D arrays
@@ -184,7 +275,15 @@ times and ignores the sample rate and cache options.
 NPZ exports reserve `schema_version` and use `1.0.0`. JSON telemetry exports
 contain `schema_version`, `time`, `channels`, `gps_time`, `gps_utc`, and `chapters`.
 Missing or non-finite values become `null`. JSON telemetry is an output format,
-not a CLI input format.
+not a CLI input format. Both exports preserve the resolved chapter order,
+starts, durations, and absolute paths without a schema change. NPZ import retains
+that timeline. Frame extraction from native reader output uses stored chapter
+paths, not the order of video arguments.
+
+The repository check `python scripts/check_chapter_order.py` compares real-fixture
+API and CLI results for ordered and reversed input, cold and shared caches,
+renamed files, reversed modification times, NPZ and JSON exports, and frames
+around the chapter boundary. It requires the verification extra and `ffmpeg`.
 
 ## Motion matching limits
 
