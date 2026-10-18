@@ -69,8 +69,7 @@ both alignment methods without the optional orientation channels.
 Use original, normal-speed recordings. Enable GPS on cameras that have it and
 wait for a satellite lock before recording. Some clips may still lack usable
 fixes. Edited, transcoded, or stitched exports can omit the metadata track.
-Supply chapters in recording order and check each recording with
-`gps-video-sync info`.
+Check each recording with `gps-video-sync info`.
 
 The 360 camera rows cover sensor metadata only. Stitching, projection, and
 frame extraction from native 360 files remain untested.
