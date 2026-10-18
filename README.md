@@ -24,10 +24,11 @@ requires `ffmpeg` on `PATH`.
 
 ## Supported cameras
 
-The bundled test recordings are from a GoPro HERO11 Black. GoPro documents
-compatible metadata for the other models below. This package has no test
-recordings from those models, so extraction, alignment, and frame verification
-remain untested.
+The bundled test recordings are from a GoPro HERO11 Black. They test motion
+alignment but contain no GPS data. Camera GPS extraction and alignment have
+synthetic tests only. GoPro documents compatible metadata for the other models
+below. This package has no test recordings from those models, so extraction,
+alignment, and frame verification remain untested.
 
 The reader needs a timed GPMF track with the sample format `gpmd` in the original
 video. It uses these fields:
@@ -50,17 +51,17 @@ video. It uses these fields:
 | HERO9 Black | `GPS5` + `GPSU` + `GPSF` | Yes | Yes | GPS and motion expected; untested |
 | HERO10 Black | `GPS5` + `GPSU` + `GPSF` | Yes | Yes | GPS and motion expected; untested |
 | HERO10 Black Bones | None | Yes | Yes | Motion only expected; untested |
-| HERO11 Black | `GPS9`, plus legacy `GPS5` | Yes | Yes | Tested with bundled recordings |
+| HERO11 Black | `GPS9`, plus legacy `GPS5` | Yes | Yes | Motion tested with bundled recordings; GPS untested |
 | HERO12 Black | None | Yes | Yes | Motion only expected; untested |
 | HERO13 Black | `GPS9` | Yes | Yes | GPS and motion expected; untested |
-| Fusion | `GPS5` + `GPSU` + `GPSF` | Yes | Not documented | Metadata compatible; 360 workflow untested |
+| Fusion | Not documented in the cited table | Yes | Not documented | Motion metadata compatible; 360 workflow untested |
 | MAX | `GPS5` + `GPSU` + `GPSF` | Yes | Yes | Metadata compatible; 360 workflow untested |
 | MAX2 | `GPS9` | Yes | Yes | Metadata compatible; 360 workflow untested |
 | MISSION 1 family | `GPS9` | Yes | Yes | Metadata compatible per GoPro; untested |
 
-HERO8, HERO9, HERO10, and HERO13 Black provide the same fields this package
-extracts from HERO11, including GPS UTC and all five motion channels. HERO12
-Black and HERO10 Black Bones provide the five motion channels but no GPS UTC.
+GoPro documents GPS UTC and all five motion channels for HERO8, HERO9,
+HERO10, HERO11, and HERO13 Black. The GPS fields differ by model, as listed above.
+HERO12 Black and HERO10 Black Bones provide the five motion channels but no GPS UTC.
 GoPro also documents the complete set for MAX, MAX2, and MISSION 1. Their
 recording formats need separate tests. HERO5, HERO6, and HERO7 Black can supply
 both alignment methods without the optional orientation channels.
