@@ -1,4 +1,3 @@
-"""Explicit registries: register a reader/source without changing the matcher."""
 from pathlib import Path
 from typing import Protocol, Sequence
 from .models import Track, Telemetry

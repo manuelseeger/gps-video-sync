@@ -6,6 +6,8 @@ __pycache__/
 dist/
 build/
 .cache/
+sync.json
+alignment*.png
 uv.lock
 *.npz
 *.LRV

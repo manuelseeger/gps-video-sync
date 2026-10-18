@@ -1,0 +1,173 @@
+name: Publish
+
+on:
+  workflow_dispatch:
+    inputs:
+      production:
+        description: Publish to PyPI after the TestPyPI installation passes
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Require a major.minor.patch tag in the main repository
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          test "$REPOSITORY" = manuelseeger/gps-video-sync
+          test "$REF_TYPE" = tag
+          [[ "$REF_NAME" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+
+  checks:
+    needs: validate
+    uses: ./.github/workflows/ci.yml
+
+  testpypi:
+    needs: checks
+    runs-on: ubuntu-latest
+    environment:
+      name: testpypi
+      url: https://test.pypi.org/p/gps-video-sync
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: distributions
+          path: dist
+      - name: Check package version against tag
+        env:
+          TAG: ${{ github.ref_name }}
+        run: python scripts/check_release.py dist --version "$TAG"
+      - name: Publish to TestPyPI with OIDC
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
+        with:
+          repository-url: https://test.pypi.org/legacy/
+          skip-existing: true
+
+  test-install:
+    needs: testpypi
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.15'
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: distributions
+          path: dist
+      - name: Download the exact TestPyPI wheel
+        env:
+          VERSION: ${{ github.ref_name }}
+        run: |
+          python -m venv "$RUNNER_TEMP/published"
+          export PATH="$RUNNER_TEMP/published/bin:$PATH"
+          mkdir "$RUNNER_TEMP/download"
+          # Allow time for the index to update.
+          for attempt in 1 2 3 4 5; do
+            python -m pip download --no-deps --only-binary=:all: --index-url https://test.pypi.org/simple/ \
+              --dest "$RUNNER_TEMP/download" "gps-video-sync==$VERSION" && break
+            sleep 15
+          done
+          wheel=("$RUNNER_TEMP/download/"*.whl)
+          test -f "${wheel[0]}"
+      - name: Verify TestPyPI archives before installation
+        env:
+          VERSION: ${{ github.ref_name }}
+        run: |
+          cmp dist/*.whl "$RUNNER_TEMP/download/"*.whl
+          for attempt in 1 2 3 4 5; do
+            if python scripts/check_index.py dist --version "$VERSION" --index testpypi; then
+              break
+            fi
+            if [ "$attempt" -eq 5 ]; then exit 1; fi
+            sleep 15
+          done
+      - name: Install the verified TestPyPI wheel and test its verify extra
+        run: |
+          export PATH="$RUNNER_TEMP/published/bin:$PATH"
+          wheel=("$RUNNER_TEMP/download/"*.whl)
+          python -m pip install "${wheel[0]}[verify]"
+          cd "$RUNNER_TEMP"
+          python -I "$GITHUB_WORKSPACE/scripts/smoke_installed.py" --verify
+
+  pypi:
+    if: inputs.production
+    needs: test-install
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/gps-video-sync
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: distributions
+          path: dist
+      - name: Publish to PyPI with OIDC
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
+
+  production-install:
+    needs: pypi
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.15'
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: distributions
+          path: dist
+      - name: Verify PyPI archives before installation
+        env:
+          VERSION: ${{ github.ref_name }}
+        run: |
+          for attempt in 1 2 3 4 5; do
+            if python scripts/check_index.py dist --version "$VERSION" --index pypi; then
+              break
+            fi
+            if [ "$attempt" -eq 5 ]; then exit 1; fi
+            sleep 15
+          done
+      - name: Check installation from PyPI
+        env:
+          VERSION: ${{ github.ref_name }}
+        run: |
+          python -m venv "$RUNNER_TEMP/production"
+          export PATH="$RUNNER_TEMP/production/bin:$PATH"
+          cd "$RUNNER_TEMP"
+          for attempt in 1 2 3 4 5; do
+            python -m pip install --index-url https://pypi.org/simple/ "gps-video-sync==$VERSION" && break
+            sleep 15
+          done
+          python -I "$GITHUB_WORKSPACE/scripts/smoke_installed.py"
+          python -m pip install --index-url https://pypi.org/simple/ "gps-video-sync[verify]==$VERSION"
+          python -I "$GITHUB_WORKSPACE/scripts/smoke_installed.py" --verify

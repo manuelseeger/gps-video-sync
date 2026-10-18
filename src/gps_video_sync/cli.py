@@ -1,4 +1,3 @@
-"""Command line interface and a portable, pickle-free telemetry interchange format."""
 from __future__ import annotations
 
 import argparse
@@ -28,8 +27,12 @@ def write_json(path, value):
 
 
 def read_npz(path):
-    """Read one exported NPZ without loading Python pickle objects."""
-    with np.load(path, allow_pickle=False) as data:
+    data = np.load(path, allow_pickle=False)
+    if not isinstance(data, np.lib.npyio.NpzFile):
+        raise ValueError(f"{path} is not an NPZ archive")
+    with data:
+        if "time" not in data.files:
+            raise ValueError("NPZ needs a time array")
         time = np.asarray(data["time"], dtype=float)
         if time.ndim != 1 or not len(time) or not np.all(np.isfinite(time)):
             raise ValueError("NPZ time must be a nonempty finite one-dimensional array")

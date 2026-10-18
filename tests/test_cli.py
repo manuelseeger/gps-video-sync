@@ -1,4 +1,3 @@
-"""Standalone CLI contract tests: no GoPro, matcher, or external tools required."""
 import json
 import os
 from pathlib import Path
@@ -8,9 +7,9 @@ import sys
 import numpy as np
 import pytest
 
-from igc_video_sync import cli
-from igc_video_sync.models import SyncResult, Telemetry, Track
-from igc_video_sync.verify import _chapter_frame
+from gps_video_sync import cli
+from gps_video_sync.models import SyncResult, Telemetry, Track
+from gps_video_sync.verify import _chapter_frame
 
 
 @pytest.fixture
@@ -84,7 +83,7 @@ def test_invalid_canonical_shape_is_clean(tmp_path, capsys):
 
 def test_module_subprocess(sample):
     env = dict(os.environ, PYTHONPATH=str(Path(__file__).resolve().parents[1] / "src"))
-    proc = subprocess.run([sys.executable, "-m", "igc_video_sync", "info", str(sample),
+    proc = subprocess.run([sys.executable, "-m", "gps_video_sync", "info", str(sample),
                            "--source", "npz"], env=env, capture_output=True, text=True)
     assert proc.returncode == 0, proc.stderr
     assert json.loads(proc.stdout)["channels"]["gyro"] == [8, 3]
@@ -103,7 +102,7 @@ def test_input_errors(args, capsys):
 
 
 def test_syntax_error_exit_one():
-    proc = subprocess.run([sys.executable, "-m", "igc_video_sync", "sync", "video.mp4"],
+    proc = subprocess.run([sys.executable, "-m", "gps_video_sync", "sync", "video.mp4"],
                           capture_output=True, text=True)
     assert proc.returncode == 1
     assert "--track" in proc.stderr
@@ -117,11 +116,14 @@ def test_invalid_npz(tmp_path, capsys):
     assert "match time" in capsys.readouterr().err
 
 
-def test_chapter_boundary():
+def test_chapter_boundary(tmp_path):
+    a, b = tmp_path / "a.mp4", tmp_path / "b.mp4"
+    a.write_bytes(b"")
+    b.write_bytes(b"")
     tel = Telemetry(np.arange(20), {}, chapters=[
-        {"path": "a.mp4", "start": 0, "end": 10},
-        {"path": "b.mp4", "start": 10, "end": 20}])
-    assert _chapter_frame(tel, [], 10) == ("b.mp4", 0)
+        {"path": str(a), "start": 0, "end": 10},
+        {"path": str(b), "start": 10, "end": 20}])
+    assert _chapter_frame(tel, [], 10) == (b.resolve(), 0)
     with pytest.raises(ValueError, match="outside"):
         _chapter_frame(tel, [], 20)
 
@@ -149,10 +151,13 @@ def test_plot_from_result(sample, tmp_path, monkeypatch):
 
 def test_frame_uses_chapter_local_time(tmp_path, monkeypatch):
     pytest.importorskip("matplotlib")
-    import igc_video_sync.verify as verify
+    import gps_video_sync.verify as verify
+    a, b = tmp_path / "a.mp4", tmp_path / "b.mp4"
+    a.write_bytes(b"")
+    b.write_bytes(b"")
     telemetry = Telemetry(np.arange(20), {}, chapters=[
-        {"path": "a.mp4", "start": 0, "end": 10},
-        {"path": "b.mp4", "start": 10, "end": 20}])
+        {"path": str(a), "start": 0, "end": 10},
+        {"path": str(b), "start": 10, "end": 20}])
     track = Track(np.arange(20), np.zeros(20), np.zeros(20), np.arange(20))
     calls = []
 
@@ -162,9 +167,11 @@ def test_frame_uses_chapter_local_time(tmp_path, monkeypatch):
 
     monkeypatch.setattr(verify.subprocess, "run", run)
     verify.plot_verification(track, telemetry, SyncResult("ok", offset_seconds=0).to_dict(),
-                             tmp_path / "plot.png", [12], ["a.mp4", "b.mp4"])
-    assert calls[0][calls[0].index("-ss") + 1] == "2.0"
-    assert calls[0][calls[0].index("-i") + 1] == "b.mp4"
+                             tmp_path / "plot.png", [12, 1e-5], [str(a), str(b)])
+    assert calls[0][calls[0].index("-ss") + 1] == "2.000000"
+    assert calls[0][calls[0].index("-i") + 1] == f"file:{b.resolve()}"
+    assert calls[0][calls[0].index("-protocol_whitelist") + 1] == "file"
+    assert calls[1][calls[1].index("-ss") + 1] == "0.000010"
 
 
 def test_sync_stdout_and_real_gps_matcher(tmp_path):
@@ -173,17 +180,17 @@ def test_sync_stdout_and_real_gps_matcher(tmp_path):
     track.write_text("HFDTE010126\nB0820004549386N01146150EA0000000700\n"
                      "B0821004549387N01146151EA0000000701\n")
     path = tmp_path / "gps.npz"
-    gt = np.arange(10.)
+    gt = np.arange(20.)
     epoch = datetime(2026, 1, 1, tzinfo=timezone.utc).timestamp()
     np.savez(path, time=gt, gps_time=gt, gps_utc=epoch+30010+gt)
-    proc = subprocess.run([sys.executable, "-m", "igc_video_sync", "sync", str(path),
+    proc = subprocess.run([sys.executable, "-m", "gps_video_sync", "sync", str(path),
                            "--source", "npz", "--track", str(track)], capture_output=True, text=True)
     assert proc.returncode == 0, proc.stderr
     result = json.loads(proc.stdout)
     assert result["method"] == "gps"
     assert result["offset_seconds"] == 30010
-    np.savez(path, time=gt, GYRO=np.zeros((10, 3)))
-    ambiguous = subprocess.run([sys.executable, "-m", "igc_video_sync", "sync", str(path),
+    np.savez(path, time=gt, GYRO=np.zeros((20, 3)))
+    ambiguous = subprocess.run([sys.executable, "-m", "gps_video_sync", "sync", str(path),
                                 "--source", "npz", "--track", str(track)], capture_output=True, text=True)
     assert ambiguous.returncode == 2, ambiguous.stderr
     assert json.loads(ambiguous.stdout)["offset_seconds"] is None
@@ -191,9 +198,70 @@ def test_sync_stdout_and_real_gps_matcher(tmp_path):
 
 def test_missing_ffmpeg_is_clean_error(sample, tmp_path, monkeypatch, capsys):
     fake_matcher(monkeypatch)
-    import igc_video_sync.verify as verify
+    import gps_video_sync.verify as verify
     monkeypatch.setattr(verify, "plot_verification", lambda *a: (_ for _ in ()).throw(
         FileNotFoundError("ffmpeg not found")))
     assert cli.main(["verify", str(sample), "--source", "npz", "--track", "unused",
                      "--output", str(tmp_path / "out.png")]) == 1
     assert "ffmpeg not found" in capsys.readouterr().err
+
+
+def _ok_result(path, **changes):
+    result = SyncResult("ok", offset_seconds=3600).to_dict()
+    result.update(changes)
+    path.write_text(json.dumps(result))
+    return path
+
+
+@pytest.mark.parametrize("changes,expected", [
+    ({"clockRate": None, "drift": None}, 0),
+    ({"clockRate": 1, "drift": None}, 0),
+    ({"clockRate": None, "drift": {"clock_rate": None}}, 0),
+    ({"clockRate": "fast"}, 1),
+    ({"clockRate": True}, 1),
+    ({"clockRate": 10**400}, 1),
+    ({"offset_seconds": 10**400}, 1),
+    ({"offset_seconds": {}}, 1),
+    ({"drift": [], "clockRate": None}, 1),
+])
+def test_verify_saved_result_boundaries(sample, tmp_path, monkeypatch, capsys, changes, expected):
+    pytest.importorskip("matplotlib")
+    fake_matcher(monkeypatch)
+    result = _ok_result(tmp_path / "result.json", **changes)
+    code = cli.main(["verify", str(sample), "--source", "npz", "--track", "unused",
+                     "--result", str(result), "--output", str(tmp_path / "plot.png")])
+    err = capsys.readouterr().err
+    assert "Traceback" not in err
+    assert code == expected, err
+
+
+def test_npy_passed_as_npz_is_clean_error(tmp_path):
+    path = tmp_path / "time.npy"
+    np.save(path, np.arange(5.))
+    proc = subprocess.run([sys.executable, "-m", "gps_video_sync", "info", str(path), "--source", "npz"],
+                          capture_output=True, text=True)
+    assert proc.returncode == 1
+    assert "not an NPZ archive" in proc.stderr and "Traceback" not in proc.stderr
+    np.savez(tmp_path / "empty.npz", other=np.arange(3.))
+    proc = subprocess.run([sys.executable, "-m", "gps_video_sync", "info", str(tmp_path / "empty.npz"),
+                           "--source", "npz"], capture_output=True, text=True)
+    assert proc.returncode == 1 and "needs a time array" in proc.stderr
+
+
+@pytest.mark.parametrize("location", ["http://127.0.0.1:9/x.mp4", "file:///etc/hostname",
+                                      "missing.mp4", "concat:a.mp4|b.mp4"])
+def test_frame_paths_from_npz_must_be_local_files(tmp_path, monkeypatch, capsys, location):
+    pytest.importorskip("matplotlib")
+    import gps_video_sync.verify as verify
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(verify.subprocess, "run", lambda *a, **k: pytest.fail("ffmpeg must not run"))
+    path = tmp_path / "telemetry.npz"
+    np.savez(path, time=np.arange(20.), chapters=json.dumps([{"path": location, "start": 0, "end": 20}]))
+    track = tmp_path / "flight.igc"
+    track.write_text("HFDTE010126\nB0100000000000N00000000EA0000000000\n"
+                     "B0102000000000N00000000EA0000000000\n")
+    result = _ok_result(tmp_path / "result.json")
+    code = cli.main(["verify", str(path), "--source", "npz", "--track", str(track), "--result",
+                     str(result), "--output", str(tmp_path / "plot.png"), "--frames", "1"])
+    assert code == 1
+    assert "local video file" in capsys.readouterr().err

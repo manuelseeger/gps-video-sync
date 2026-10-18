@@ -4,7 +4,7 @@ import tracemalloc
 
 import pytest
 
-from igc_video_sync import mp4
+from gps_video_sync import mp4
 from mp4_builder import Track, box, build, clock, full, table, track_box, video
 
 

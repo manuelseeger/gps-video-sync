@@ -202,7 +202,7 @@ class GoProSource:
         if isinstance(paths, (str, Path)) or not paths:
             raise ValueError("Supply a nonempty sequence of chapter paths")
         files = [Path(p).expanduser().resolve() for p in paths]
-        directory = Path(cache_dir).expanduser() if cache_dir is not None else Path.home() / ".cache" / "igc-video-sync"
+        directory = Path(cache_dir).expanduser() if cache_dir is not None else Path.home() / ".cache" / "gps-video-sync"
         cache = _cache_path(files, hz, directory)
         saved = _load_cache(cache)
         if saved is not None:
@@ -215,6 +215,9 @@ class GoProSource:
             raw_chapters.append(raw)
             gps.extend(gps5 + gps9)
             base += chapter["duration"]
+        if not any(chapter["packets"] for chapter in chapters):
+            names = ", ".join(path.name for path in files)
+            raise ValueError(f"No GoPro telemetry (gpmd) track found in: {names}")
         grid = np.arange(0, base, 1 / hz)
         channels = {}
         for chapter, raw in zip(chapters, raw_chapters):

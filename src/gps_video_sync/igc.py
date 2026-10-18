@@ -1,4 +1,3 @@
-"""IGC B-fix reader with invalid-fix exclusion and midnight unwrapping."""
 from datetime import datetime
 from pathlib import Path
 import re
@@ -22,28 +21,31 @@ class IGCReader:
                     pass
             if not line.startswith("B") or len(line) < 35:
                 continue
+            if not (line[1:14].isascii() and line[1:14].isdigit()
+                    and line[15:23].isascii() and line[15:23].isdigit()):
+                continue
             try:
                 h, m, s = int(line[1:3]), int(line[3:5]), int(line[5:7])
                 if h > 23 or m > 59 or s > 59:
                     continue
                 clock = h * 3600 + m * 60 + s
-                # Only a large reverse jump is a midnight, not out-of-order data.
-                if last_clock is not None and rollover and clock > last_clock + 43200:
-                    # A late packet from the previous day is not another day.
-                    continue
-                if last_clock is not None and clock < last_clock - 43200:
-                    rollover += 86400
-                last_clock = clock
-                t = clock + rollover
                 if line[24] != "A" or line[14] not in "NS" or line[23] not in "EW":
                     continue
                 lat = (int(line[7:9]) + int(line[9:14]) / 60000) * (1 if line[14] == "N" else -1)
                 lon = (int(line[15:18]) + int(line[18:23]) / 60000) * (1 if line[23] == "E" else -1)
+                pressure, gps = int(line[25:30]), int(line[30:35])
                 if abs(lat) > 90 or abs(lon) > 180:
                     continue
+                if last_clock is not None and rollover and clock > last_clock + 43200:
+                    continue
+                t = clock + rollover
+                if last_clock is not None and clock < last_clock - 43200:
+                    t += 86400
                 if rows and t <= rows[-1][0]:
                     continue
-                rows.append((t, lat, lon, int(line[25:30]), int(line[30:35])))
+                rollover = t - clock
+                last_clock = clock
+                rows.append((t, lat, lon, pressure, gps))
             except ValueError:
                 continue
         if len(rows) < 2:

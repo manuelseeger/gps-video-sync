@@ -1,5 +1,6 @@
 from fractions import Fraction
 import json
+import re
 from pathlib import Path
 import shutil
 import subprocess
@@ -7,14 +8,15 @@ import subprocess
 import numpy as np
 import pytest
 
-from igc_video_sync import read_track, read_video, synchronize
-from igc_video_sync.cli import main
-from igc_video_sync import mp4
-from igc_video_sync.gpmf import number, streams
+from gps_video_sync import read_track, read_video, synchronize
+from gps_video_sync.cli import main
+from gps_video_sync import mp4
+from gps_video_sync.gpmf import number, streams
 
 pytestmark = pytest.mark.integration
 FIXTURES = Path(__file__).parent / "fixtures"
 EXPECTED_OFFSET = 36160.112
+FFPROBE_PARITY_MAJOR = 9
 
 
 @pytest.fixture(scope="module")
@@ -59,6 +61,10 @@ def test_exact_chapter_timeline(flight):
 def test_ffprobe_parity(chapter):
     if not shutil.which("ffprobe"):
         pytest.skip("optional parity requires ffprobe")
+    version = subprocess.run(["ffprobe", "-version"], capture_output=True, text=True).stdout
+    major = re.match(r"ffprobe version n?(\d+)\.", version)
+    if not major or int(major[1]) < FFPROBE_PARITY_MAJOR:
+        pytest.skip(f"parity values are verified with FFmpeg {FFPROBE_PARITY_MAJOR} or later")
     path = FIXTURES / f"chapter-{chapter:02}.mp4"
     probe = json.loads(subprocess.run(
         ["ffprobe", "-v", "error", "-show_streams", "-show_packets", "-of", "json", str(path)],
@@ -167,15 +173,16 @@ def test_verification_frames(flight, tmp_path):
     pytest.importorskip("matplotlib")
     if not shutil.which("ffmpeg"):
         pytest.skip("Frame extraction requires ffmpeg")
-    from igc_video_sync.verify import plot_verification
+    from gps_video_sync.verify import plot_verification
 
     track, telemetry, paths = flight
     result = synchronize(track, telemetry)
     output = tmp_path / "alignment.png"
     boundary = telemetry.chapters[1]["start"]
     plot_verification(track, telemetry, result.to_dict(), output,
-                      frames=[boundary - 1, boundary + 1], videos=paths)
+                      frames=[boundary - 1, boundary + 1, 0.00001, boundary + 1e-7], videos=paths)
     assert output.stat().st_size > 0
-    frames = list(tmp_path.glob("alignment-frame-*.png"))
-    assert len(frames) == 2
-    assert all(path.stat().st_size > 0 for path in frames)
+    frames = sorted(tmp_path.glob("alignment-frame-*.png"))
+    assert len(frames) == 4
+    assert all(path.read_bytes().startswith(b"\x89PNG") for path in frames)
+    assert not any(re.search(r"\de[-+]\d", path.name) for path in frames)

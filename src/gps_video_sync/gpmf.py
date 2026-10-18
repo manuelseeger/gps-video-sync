@@ -1,4 +1,3 @@
-"""Small, strict GPMF byte decoder (network byte order and 32-bit padding)."""
 from __future__ import annotations
 
 import re
@@ -16,7 +15,6 @@ class Record(NamedTuple):
     data: bytes
 
 
-# GPMF stores numeric fields in big-endian order, including complex TYPE rows.
 DTYPES = {
     "b": ">i1", "B": ">u1", "s": ">i2", "S": ">u2",
     "l": ">i4", "L": ">u4", "j": ">i8", "J": ">u8",
@@ -24,8 +22,15 @@ DTYPES = {
 }
 
 
+MAX_DEPTH = 8
+
+
 def records(buf: bytes) -> Iterator[Record]:
-    """Yield records, rejecting partial headers, payloads, and padding."""
+    for record in _records(memoryview(buf)):
+        yield record._replace(data=bytes(record.data))
+
+
+def _records(buf: memoryview) -> Iterator[Record]:
     offset = 0
     while offset < len(buf):
         if len(buf) - offset < 8:
@@ -45,18 +50,19 @@ def records(buf: bytes) -> Iterator[Record]:
 
 
 def streams(buf: bytes, _depth: int = 0) -> Iterator[list[Record]]:
-    """Walk DEVC/container records and return each STRM's fields."""
-    if _depth > 32:
+    """Yield STRM records. Nesting is limited to MAX_DEPTH containers, and
+    payload bytes are not copied between levels, so work is linear in size."""
+    if _depth > MAX_DEPTH:
         raise ValueError("GPMF container nesting is too deep")
-    for record in records(buf):
+    view = buf if isinstance(buf, memoryview) else memoryview(buf)
+    for record in _records(view):
         if record.key == "STRM":
-            yield list(records(record.data))
+            yield [r._replace(data=bytes(r.data)) for r in _records(record.data)]
         elif record.typ == "\0":
             yield from streams(record.data, _depth + 1)
 
 
 def _types(description: str, size: int) -> list[str]:
-    # TYPE permits arrays, for example l[7]S[2] as well as lllllllSS.
     types: list[str] = []
     offset = 0
     while offset < len(description):
@@ -76,7 +82,6 @@ def _types(description: str, size: int) -> list[str]:
 
 
 def number(record: Record, type_hint: str | Record | None = None) -> np.ndarray:
-    """Decode numeric rows; complex '?' rows require the stream's TYPE field."""
     _, typ, size, count, data = record
     if len(data) != size * count or size == 0:
         raise ValueError("Invalid GPMF numeric payload size")
@@ -108,7 +113,6 @@ def number(record: Record, type_hint: str | Record | None = None) -> np.ndarray:
 
 
 def scaled(record: Record, fields: dict[str, Record]) -> np.ndarray:
-    """Decode a numeric record and apply scalar or per-column SCAL divisors."""
     values = number(record, fields.get("TYPE"))
     if "SCAL" in fields:
         scale = number(fields["SCAL"]).ravel()
