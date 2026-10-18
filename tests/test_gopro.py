@@ -125,7 +125,7 @@ def test_all_motion_channels_and_quaternion_signs(tmp_path):
                      *[stream(numeric("SCAL", [1000]),
                               numeric(key, [[1000, 0, 0, 0], [-1000, 0, 0, 0]])) for key in ("CORI", "IORI")])
     path = video(tmp_path, "motion.mp4", [payload], duration=1.0)
-    result = GoProSource().read([path], hz=4, cache_dir=tmp_path / "cache")
+    result = GoProSource().read(path, hz=4, cache_dir=tmp_path / "cache")
     np.testing.assert_allclose(result.time, [0, .25, .5, .75])
     assert set(result.channels) == set(gopro.KEYS)
     for key in ("ACCL", "GYRO", "GRAV"):
@@ -135,31 +135,6 @@ def test_all_motion_channels_and_quaternion_signs(tmp_path):
     assert result.gps_time.size == result.gps_utc.size == 0
 
 
-def test_chapter_order_actual_duration_and_missing_channels(tmp_path):
-    first = video(tmp_path, "z.mp4", [packet(gps5("240101120000.000"),
-                  stream(numeric("ACCL", [[1, 2, 3]]))), packet(gps5("240101120001.000"))], duration=2.25)
-    second = video(tmp_path, "a.mp4", [packet(gps5("240101120002.250"),
-                   stream(numeric("GYRO", [[4, 5, 6]]))), packet(gps5("240101120003.250"))], duration=1.75)
-    result = GoProSource().read([first, second], hz=4, cache_dir=tmp_path / "cache")
-    assert [c["file"] for c in result.chapters] == [str(first), str(second)]
-    assert [c["start"] for c in result.chapters] == [0, 2.25]
-    assert [c["duration"] for c in result.chapters] == [2.25, 1.75]
-    assert len(result.time) == 16
-    assert np.isnan(result.channels["GYRO"][:9]).all()
-    assert np.isnan(result.channels["ACCL"][9:]).all()
-    assert set(result.channels) == {"ACCL", "GYRO"}
-
-
-def test_gps5_utc_offsets_chapters_and_bad_fixes(tmp_path):
-    first = video(tmp_path, "first.mp4", [packet(gps5(count=4)), packet(gps5(fix=2))], duration=2.25,
-                  start=5, pts=[5.25, 6.25])
-    second = video(tmp_path, "second.mp4", [packet(gps5("240102000001.500"))], duration=1.25)
-    result = GoProSource().read([first, second], hz=2, cache_dir=tmp_path / "cache")
-    epoch = datetime(2024, 1, 1, 23, 59, 59, 500000, tzinfo=timezone.utc).timestamp()
-    np.testing.assert_allclose(result.gps_time, [.25, .5, .75, 1, 2.25, 2.75])
-    np.testing.assert_allclose(result.gps_utc - epoch, [0, .25, .5, .75, 2, 2.5])
-    np.testing.assert_allclose(result.gps_utc - result.gps_time, epoch - .25)
-    assert result.channels == {}
 
 
 def test_gps9_primary_utc_and_fix_filter(tmp_path):
@@ -167,31 +142,25 @@ def test_gps9_primary_utc_and_fix_filter(tmp_path):
             for second, fix in [(43200123, 3), (43200623, 2), (43201123, 3)]]
     payload = packet(gps9(rows), gps5("240101120000.000", count=3))
     path = video(tmp_path, "gps9.mp4", [payload], duration=1.5, intervals=[1.5])
-    result = GoProSource().read([path], hz=10, cache_dir=tmp_path / "cache")
+    result = GoProSource().read(path, hz=10, cache_dir=tmp_path / "cache")
     np.testing.assert_allclose(result.gps_time, [0, 1])
     np.testing.assert_allclose(result.gps_utc - gopro.GPS_EPOCH - 9000 * 86400, [43200.123, 43201.123])
     path2 = video(tmp_path, "bad.mp4", [packet(gps9(rows, gpsf=0), gps5())])
-    rejected = GoProSource().read([path2], cache_dir=tmp_path / "cache")
+    rejected = GoProSource().read(path2, cache_dir=tmp_path / "cache")
     assert len(rejected.gps_time) == len(rejected.gps_utc) == 0
 
 
 @pytest.mark.parametrize("bad", ["garbage", "240132120000.000"])
 def test_invalid_gpsu_ignored(tmp_path, bad):
     path = video(tmp_path, "bad-time.mp4", [packet(gps5(bad))])
-    assert not len(GoProSource().read([path], cache_dir=tmp_path / "cache").gps_time)
+    assert not len(GoProSource().read(path, cache_dir=tmp_path / "cache").gps_time)
 
 
 def test_missing_gpmd_stream(tmp_path):
     path = video(tmp_path, "plain.mp4", [], duration=1)
     with pytest.raises(ValueError, match=r"No GoPro telemetry \(gpmd\) track found in: plain.mp4"):
-        GoProSource().read([path], hz=2, cache_dir=tmp_path / "cache")
+        GoProSource().read(path, hz=2, cache_dir=tmp_path / "cache")
 
-
-def test_chapter_without_gpmd_cannot_establish_order(tmp_path):
-    first = video(tmp_path, "a.mp4", [packet(stream(numeric("ACCL", [[1, 2, 3]])))], duration=1)
-    second = video(tmp_path, "b.mp4", [], duration=1)
-    with pytest.raises(ValueError, match="Cannot establish chapter order: no common usable recording clock"):
-        GoProSource().read([first, second], hz=2, cache_dir=tmp_path / "cache")
 
 
 def test_deep_gpmf_nesting_is_rejected():
@@ -206,7 +175,7 @@ def test_variable_sample_durations(tmp_path):
     path = video(tmp_path, "variable.mp4",
                  [packet(gps5()), packet(gps5("240102000000.500"))],
                  intervals=[.5, 1.5], pts=[0, .5])
-    result = GoProSource().read([path], cache_dir=tmp_path / "cache")
+    result = GoProSource().read(path, cache_dir=tmp_path / "cache")
     np.testing.assert_array_equal(result.gps_time, [0, .25, .5, 1.25])
 
 
@@ -223,7 +192,7 @@ def test_truncated_and_malformed_video_packets(tmp_path, damage):
     path = tmp_path / "truncated.mp4"
     path.write_bytes(build([video_track(), Track(payloads=[payload], replacements=replacements)]))
     with pytest.raises(ValueError):
-        GoProSource().read([path], cache_dir=tmp_path / "cache")
+        GoProSource().read(path, cache_dir=tmp_path / "cache")
 
 
 def test_cold_extraction_without_subprocess(tmp_path, monkeypatch):
@@ -235,12 +204,11 @@ def test_cold_extraction_without_subprocess(tmp_path, monkeypatch):
     monkeypatch.setattr(subprocess, "run", forbidden)
     monkeypatch.setattr(subprocess, "Popen", forbidden)
     monkeypatch.setenv("PATH", str(tmp_path))
-    result = GoProSource().read([path], cache_dir=tmp_path / "cache")
+    result = GoProSource().read(path, cache_dir=tmp_path / "cache")
     np.testing.assert_array_equal(result.gps_time, [0, .5, 1, 1.5])
     epoch = datetime(2024, 1, 1, 23, 59, 59, 500000, tzinfo=timezone.utc).timestamp()
     np.testing.assert_array_equal(result.gps_utc - epoch, [0, .5, 0, .5])
-    assert result.chapters[0]["duration"] == 2
-    assert result.chapters[0]["packets"] == 2
+    assert result.duration == 2
 
 
 def test_partial_sample_sensor_positions(tmp_path):
@@ -248,7 +216,7 @@ def test_partial_sample_sensor_positions(tmp_path):
     payload = packet(stream(numeric("ACCL", [[1, 2, 3]] * 4)))
     path.write_bytes(build([video_track(deltas=[1001]),
                            Track(deltas=[1001], payloads=[payload], edits=[(1001, 300)])]))
-    chapter = gopro._chapter(path)
+    chapter = gopro._recording(path)
     assert chapter.duration == 1.001
     np.testing.assert_allclose(chapter.motion["ACCL"][0][:, 0], [.2005, .45075], rtol=0, atol=1e-12)
     np.testing.assert_array_equal(chapter.motion["ACCL"][0][:, 1:], [[1, 2, 3], [1, 2, 3]])
@@ -259,34 +227,34 @@ def test_cache_roundtrip_all_fields_and_default_location(tmp_path, monkeypatch):
     calls = observe_timeline(monkeypatch)
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     source = GoProSource()
-    result = source.read([path], hz=4)
+    result = source.read(path, hz=4)
 
     def forbidden(*args, **kwargs):
         pytest.fail("warm cache accessed the MP4 parser")
 
     with monkeypatch.context() as patch:
         patch.setattr(mp4, "read_timeline", forbidden)
-        saved = source.read([path], hz=4)
+        saved = source.read(path, hz=4)
     assert calls == [path]
     assert list((tmp_path / ".cache" / "gps-video-sync").glob("gopro-*.npz"))
-    assert saved.chapters == result.chapters
+    assert saved.video == result.video and saved.duration == result.duration
     np.testing.assert_array_equal(saved.time, result.time)
     np.testing.assert_array_equal(saved.gps_time, result.gps_time)
     np.testing.assert_array_equal(saved.gps_utc, result.gps_utc)
     np.testing.assert_array_equal(saved.channels["CORI"], result.channels["CORI"])
-    source.read([path], hz=5)
+    source.read(path, hz=5)
     assert len(calls) == 2
     with path.open("ab") as handle:
         handle.write(box(b"free"))
-    source.read([path], hz=4)
+    source.read(path, hz=4)
     assert len(calls) == 3
     stat = path.stat()
     import os
     os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1))
-    source.read([path], hz=4)
+    source.read(path, hz=4)
     assert len(calls) == 4
     monkeypatch.setattr(gopro, "CACHE_VERSION", "1.0.2")
-    source.read([path], hz=4)
+    source.read(path, hz=4)
     assert len(calls) == 5
 
 
@@ -294,7 +262,7 @@ def test_old_cache_version_is_ignored(tmp_path, monkeypatch):
     path = video(tmp_path, "version.mp4", [packet(gps5())])
     cache = tmp_path / "cache"
     source = GoProSource()
-    source.read([path], hz=2, cache_dir=cache)
+    source.read(path, hz=2, cache_dir=cache)
     saved_path = next(cache.glob("*.npz"))
     with np.load(saved_path, allow_pickle=False) as saved:
         content = dict(saved)
@@ -304,49 +272,19 @@ def test_old_cache_version_is_ignored(tmp_path, monkeypatch):
     content["gps_utc"] = np.array([-1.0, -1.0])
     np.savez_compressed(saved_path, **content)
     calls = observe_timeline(monkeypatch)
-    rebuilt = source.read([path], hz=2, cache_dir=cache)
+    rebuilt = source.read(path, hz=2, cache_dir=cache)
     assert calls == [path]
     np.testing.assert_array_equal(rebuilt.gps_time, [0, .5])
     epoch = datetime(2024, 1, 1, 23, 59, 59, 500000, tzinfo=timezone.utc).timestamp()
     np.testing.assert_array_equal(rebuilt.gps_utc - epoch, [0, .5])
 
 
-def test_cache_chapter_order_and_corruption(tmp_path, monkeypatch):
-    first = video(tmp_path, "first.mp4", [packet(gps5()), packet(gps5("240102000000.500"))])
-    second = video(tmp_path, "second.mp4", [packet(gps5("240102000001.500")),
-                   packet(gps5("240102000002.500"))])
-    calls = observe_timeline(monkeypatch)
-    cache = tmp_path / "cache"
-    source = GoProSource()
-    source.read([first, second], cache_dir=cache)
-    result = source.read([second, first], cache_dir=cache)
-    assert calls == [first, second]
-    assert result.chapters[0]["file"] == str(first)
-    assert len(list(cache.glob("*.npz"))) == 1
-    for item in cache.glob("*.npz"):
-        item.write_bytes(b"broken cache")
-    source.read([first, second], cache_dir=cache)
-    assert len(calls) == 4
-
-
-def test_quaternion_continuity_across_chapters_and_low_hz(tmp_path):
-    def quaternion_chapter(name, origin, sign):
-        return video(tmp_path, name, [packet(stream(numeric("STMP", [origin + index * 100000], "J"),
-                     numeric("CORI", [[sign, 0, 0, 0]]))) for index in range(3)],
-                     duration=.25, pts=[0, .1, .2], intervals=[.1, .1, .05])
-
-    first = quaternion_chapter("a.mp4", 100000000, 1)
-    second = quaternion_chapter("b.mp4", 100250000, -1)
-    result = GoProSource().read([first, second], hz=4, cache_dir=tmp_path / "cache")
-    np.testing.assert_array_equal(result.channels["CORI"], [[1, 0, 0, 0], [1, 0, 0, 0]])
-    result = GoProSource().read([first, second], hz=1, cache_dir=tmp_path / "cache")
-    assert result.channels["CORI"].shape == (1, 4)
 
 
 @pytest.mark.parametrize("hz", [0, -1, float("inf"), float("nan")])
 def test_invalid_hz(hz):
     with pytest.raises(ValueError, match="hz"):
-        GoProSource().read(["unused.mp4"], hz=hz)
+        GoProSource().read("unused.mp4", hz=hz)
 
 
 def test_resample_sensor_gap_is_nan():
@@ -358,11 +296,47 @@ def test_resample_sensor_gap_is_nan():
     assert np.isfinite(values[:9]).all()
 
 
-def test_invalid_paths_and_missing_video(tmp_path):
-    for paths in ([], "video.mp4", Path("video.mp4")):
-        with pytest.raises(ValueError, match="sequence"):
+
+def test_gps5_local_utc_and_bad_fixes(tmp_path):
+    path = video(tmp_path, "gps.mp4", [packet(gps5(count=4)), packet(gps5(fix=2))],
+                 duration=2.25, start=5, pts=[5.25, 6.25])
+    result = GoProSource().read(path, hz=2, cache_dir=tmp_path / "cache")
+    epoch = datetime(2024, 1, 1, 23, 59, 59, 500000, tzinfo=timezone.utc).timestamp()
+    np.testing.assert_allclose(result.gps_time, [.25, .5, .75, 1])
+    np.testing.assert_allclose(result.gps_utc - epoch, [0, .25, .5, .75])
+    assert result.video == str(path) and result.duration == 2.25
+
+
+def test_independent_no_clock_cache_subset_and_corruption(tmp_path, monkeypatch):
+    from gps_video_sync import Track, match_videos
+    paths = [video(tmp_path, name, [packet(stream(numeric(key, [[1, 2, 3]])))], duration=1)
+             for name, key in (("z.mp4", "ACCL"), ("a.mp4", "GYRO"))]
+    calls = observe_timeline(monkeypatch)
+    track = Track(np.arange(10.), np.zeros(10), np.zeros(10), np.zeros(10))
+    cache = tmp_path / "cache"
+    expected = match_videos(track, paths, cache_dir=cache)
+    assert [r.status for r in expected] == ["ambiguous", "ambiguous"]
+    assert calls == paths
+    for order in (paths[::-1], paths[:1], paths[1:]):
+        results = match_videos(track, order, cache_dir=cache)
+        assert [r.to_dict() for r in results] == [next(r for r in expected if r.video == str(p)).to_dict() for p in order]
+    assert calls == paths
+    assert len(list(cache.glob("*.npz"))) == 2
+    for item in cache.glob("*.npz"):
+        item.write_bytes(b"broken cache")
+    assert [r.to_dict() for r in match_videos(track, paths, cache_dir=cache)] == [r.to_dict() for r in expected]
+    assert calls == paths + paths
+    invalid = video(tmp_path, "no-gpmd.mp4", [], duration=1)
+    results = match_videos(track, [paths[0], invalid, paths[1]], cache_dir=cache)
+    assert [r.status for r in results] == ["ambiguous", "failed", "ambiguous"]
+    assert results[1].video == str(invalid)
+
+
+def test_single_path_boundary_and_missing_video(tmp_path):
+    for paths in ([], ["video.mp4"]):
+        with pytest.raises(ValueError, match="one video path"):
             GoProSource().read(paths)
     path = tmp_path / "no-video.mp4"
     path.write_bytes(build([Track()]))
     with pytest.raises(ValueError, match="no video"):
-        GoProSource().read([path], cache_dir=tmp_path / "cache")
+        GoProSource().read(path, cache_dir=tmp_path / "cache")

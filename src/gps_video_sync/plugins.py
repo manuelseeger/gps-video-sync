@@ -1,12 +1,13 @@
 from pathlib import Path
-from typing import Protocol, Sequence
+import math
+from typing import Protocol
 from .models import Track, Telemetry
 
 class TrackReader(Protocol):
     def read(self, path: str | Path, *, altitude: str = "auto") -> Track: ...
 
 class VideoSource(Protocol):
-    def read(self, paths: Sequence[str | Path], *, hz: float = 10,
+    def read(self, path: str | Path, *, hz: float = 10,
              cache_dir: str | Path | None = None) -> Telemetry: ...
 
 TRACK_READERS: dict[str, TrackReader] = {}
@@ -21,6 +22,10 @@ def register_video(name: str, source: VideoSource) -> None:
 def read_track(path: str | Path, *, format: str = "igc", altitude: str = "auto") -> Track:
     return TRACK_READERS[format].read(path, altitude=altitude)
 
-def read_video(paths: Sequence[str | Path], *, source: str = "gopro", hz: float = 10,
+def read_video(path: str | Path, *, source: str = "gopro", hz: float = 10,
                cache_dir: str | Path | None = None) -> Telemetry:
-    return VIDEO_SOURCES[source].read(paths, hz=hz, cache_dir=cache_dir)
+    if not isinstance(path, (str, Path)):
+        raise ValueError("Supply one video path")
+    if not math.isfinite(hz) or hz <= 0:
+        raise ValueError("hz must be finite and positive")
+    return VIDEO_SOURCES[source].read(path, hz=hz, cache_dir=cache_dir)

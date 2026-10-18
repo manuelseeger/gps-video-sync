@@ -1,5 +1,6 @@
 from __future__ import annotations
 from datetime import datetime, timezone, timedelta
+from numbers import Real
 import numpy as np
 from scipy.ndimage import gaussian_filter1d as gf
 from scipy.signal import correlate, correlation_lags
@@ -201,7 +202,7 @@ def _local_scores(utc, t, a, b, offsets, absolute=False, minimum=60):
 def match_features(utc, t, track_features, video_features, *, exclusion_seconds=25.) -> SyncResult:
     weights = {"yaw": .4, "vertical": .5, "gyro_norm": .05, "gload": .05}
     curves, details = {}, {}
-    for key in track_features.keys() & video_features.keys():
+    for key in sorted(track_features.keys() & video_features.keys()):
         a, b = track_features[key], video_features[key]
         required = max(90, .65*min(np.isfinite(a).sum(), np.isfinite(b).sum()))
         lags, r, n = correlation_curve(a, b, min_samples=required)
@@ -308,22 +309,49 @@ def estimate_drift(utc, t, a, b, offset, *, absolute=False, window_seconds=400, 
     return obj
 
 
-def synchronize(track: Track, telemetry: Telemetry) -> SyncResult:
-    for name, time in (("track", track.time), ("video", telemetry.time)):
-        if np.ndim(time) != 1 or not np.all(np.isfinite(time)) or np.any(np.diff(time) <= 0):
-            raise ValueError(f"{name} times must be finite, strictly increasing 1-D arrays")
+def validate_track(track: Track) -> None:
+    if np.ndim(track.time) != 1 or not np.all(np.isfinite(track.time)) or np.any(np.diff(track.time) <= 0):
+        raise ValueError("track times must be finite, strictly increasing 1-D arrays")
     if len(track.time) < 2 or any(np.shape(a) != np.shape(track.time) for a in
                                 (track.latitude, track.longitude, track.altitude)):
         raise ValueError("Track needs at least two fixes and matching 1-D arrays")
+    if not all(np.all(np.isfinite(a)) for a in (track.latitude, track.longitude, track.altitude)):
+        raise ValueError("Track coordinates and altitude must be finite")
+
+
+def validate_telemetry(telemetry: Telemetry) -> None:
+    time = telemetry.time
+    if np.ndim(time) != 1 or not np.all(np.isfinite(time)) or np.any(np.diff(time) <= 0) or np.any(time < 0):
+        raise ValueError("video times must be nonnegative, finite, strictly increasing 1-D arrays")
+    if telemetry.video is not None and (not isinstance(telemetry.video, str) or not telemetry.video):
+        raise ValueError("Recording identity must be a nonempty string")
+    if telemetry.duration is not None:
+        if isinstance(telemetry.duration, bool) or not isinstance(telemetry.duration, Real) or not np.isfinite(telemetry.duration) or telemetry.duration <= 0:
+            raise ValueError("Recording duration must be finite and positive")
+        if len(time) and time[-1] >= telemetry.duration:
+            raise ValueError("Telemetry samples must be inside recording duration")
+    if isinstance(telemetry.media_offset_seconds, bool) or not isinstance(telemetry.media_offset_seconds, Real) or not np.isfinite(telemetry.media_offset_seconds) or telemetry.media_offset_seconds < 0:
+        raise ValueError("Media offset must be finite and nonnegative")
     for key, values in telemetry.channels.items():
+        if np.ndim(values) == 0 or len(values) != len(time):
+            raise ValueError(f"Channel {key!r} must match time length")
         if key in {"GYRO", "ACCL", "GRAV", "CORI", "IORI"}:
             width = 4 if key in {"CORI", "IORI"} else 3
             if np.shape(values) != (len(telemetry.time), width):
                 raise ValueError(f"{key} must have shape (video samples, {width})")
     if np.ndim(telemetry.gps_time) != 1 or np.shape(telemetry.gps_utc) != np.shape(telemetry.gps_time):
         raise ValueError("GPS video and UTC times must be matching 1-D arrays")
+
+
+def synchronize(track: Track, telemetry: Telemetry) -> SyncResult:
+    validate_track(track)
+    validate_telemetry(telemetry)
+    return _synchronize(track, telemetry)
+
+
+def _synchronize(track: Track, telemetry: Telemetry) -> SyncResult:
     if len(telemetry.time) < 2:
-        return SyncResult("failed", message="No telemetry samples", date=track.date)
+        return SyncResult("failed", message="No telemetry samples", date=track.date, video=telemetry.video)
     origin_date = track.date
     gps_rejection = ""
     finite_gps = (np.isfinite(telemetry.gps_utc) & np.isfinite(telemetry.gps_time)
@@ -415,7 +443,7 @@ def synchronize(track: Track, telemetry: Telemetry) -> SyncResult:
                                          "measured_clock_rate": float(fit.slope),
                                          "seconds_per_hour": float((fit.slope-1)*3600),
                                          "stderr_seconds_per_hour": float(fit.stderr*3600)},
-                                  chapters=telemetry.chapters, date=origin_date)
+                                  video=telemetry.video, date=origin_date)
     elif len(telemetry.gps_time):
         gps_rejection = "Too few GPS UTC observations or no track date"
     utc, t, tf, vf = build_features(track, telemetry)
@@ -423,7 +451,7 @@ def synchronize(track: Track, telemetry: Telemetry) -> SyncResult:
         result = SyncResult("ambiguous", message="Track or video spans less than two whole seconds")
     else:
         result = match_features(utc, t, tf, vf)
-    result.date, result.chapters = track.date, telemetry.chapters
+    result.date, result.video = track.date, telemetry.video
     if gps_rejection:
         result.confidence["gps_rejected"] = gps_rejection
         if result.status != "ok":

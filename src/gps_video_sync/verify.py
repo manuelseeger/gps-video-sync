@@ -28,48 +28,49 @@ def _seconds(value):
     return "0.000000" if text == "-0.000000" else text
 
 
-def _chapter_frame(telemetry, videos, seconds):
+def select_result(document, video):
+    if not isinstance(document, dict) or document.get("schema_version") != "2.0.0":
+        raise ValueError("Expected a schema_version 2.0.0 sync document")
+    entries = document.get("videos")
+    if not isinstance(entries, list) or not entries:
+        raise ValueError("Sync document needs a nonempty videos list")
+    identities = set()
+    for entry in entries:
+        if not isinstance(entry, dict) or entry.get("schema_version") != "2.0.0":
+            raise ValueError("Malformed saved-result entry")
+        identity = entry.get("video")
+        if not isinstance(identity, str) or not identity or identity in identities:
+            raise ValueError("Saved-result recording identities must be nonempty and unique")
+        identities.add(identity)
+        if entry.get("status") not in ("ok", "ambiguous", "failed"):
+            raise ValueError("Invalid saved-result status")
+        for name in ("confidence", "per_feature", "drift"):
+            if entry.get(name) is not None and not isinstance(entry[name], dict):
+                raise ValueError(f"Result {name} must be an object")
+        if entry.get("offset_seconds") is not None:
+            _number(entry["offset_seconds"], "Result offset")
+        if entry.get("uncertainty_seconds") is not None:
+            if _number(entry["uncertainty_seconds"], "Result uncertainty") < 0:
+                raise ValueError("Result uncertainty must be nonnegative")
+        if entry["status"] == "ok":
+            _alignment(entry)
+    matches = [entry for entry in entries if entry["video"] == video]
+    if len(matches) != 1:
+        raise ValueError(f"Saved result has no unique entry for recording {video}")
+    return matches[0]
+
+
+def _recording_frame(telemetry, seconds):
     if not np.isfinite(seconds) or seconds < 0:
         raise ValueError("Frame times must be finite, nonnegative video seconds")
-    chapters = telemetry.chapters
-    if not chapters:
-        if len(videos) != 1 or str(videos[0]).lower().endswith(".npz"):
-            raise ValueError("Frame extraction requires chapter paths and timeline bounds")
-        if len(telemetry.time) and seconds > telemetry.time[-1]:
-            raise ValueError(f"Frame time {seconds} is outside the video timeline")
-        return _local_video(videos[0]), seconds
-    for index, chapter in enumerate(chapters):
-        if not isinstance(chapter, dict):
-            raise ValueError("Chapter metadata must be objects")
-        start = chapter.get("start_seconds", chapter.get("start", chapter.get("video_start")))
-        end = chapter.get("end_seconds", chapter.get("end", chapter.get("video_end")))
-        if start is None:
-            raise ValueError("Chapter metadata needs start_seconds or start for frame extraction")
-        start = _number(start, "Chapter start")
-        if end is None and chapter.get("duration") is not None:
-            end = start + _number(chapter["duration"], "Chapter duration")
-        if end is None:
-            raise ValueError("Chapter metadata needs end_seconds, end, or duration")
-        end = _number(end, "Chapter end")
-        if start <= seconds < end:
-            path = chapter.get("path", chapter.get("file"))
-            if path is None and index < len(videos) and not str(videos[index]).lower().endswith(".npz"):
-                path = videos[index]
-            if not path or not isinstance(path, str):
-                raise ValueError("Chapter metadata needs a video path for frame extraction")
-            return _local_video(path), max(0., seconds - start)
-    raise ValueError(f"Frame time {seconds} is outside the chapter timeline")
+    if telemetry.duration is None or seconds >= telemetry.duration:
+        raise ValueError(f"Frame time {seconds} is outside the recording duration")
+    if not telemetry.video or Path(telemetry.video).suffix.lower() == ".npz":
+        raise ValueError("Frame extraction requires a local recording path")
+    return _local_video(telemetry.video), seconds + telemetry.media_offset_seconds
 
 
-def plot_verification(track, telemetry, result, output, frames=(), videos=()):
-    try:
-        import matplotlib
-        matplotlib.use("Agg")
-        import matplotlib.pyplot as plt
-    except ImportError as exc:
-        raise RuntimeError("Verification plots require: pip install 'gps-video-sync[verify]'") from exc
-    if not isinstance(result, dict) or result.get("schema_version") != "1.0.0":
-        raise ValueError("Expected a schema_version 1.0.0 sync result")
+def _alignment(result):
     offset = result.get("offset_seconds")
     if offset is None:
         offset = result.get("videoStartUtcSeconds")
@@ -83,8 +84,24 @@ def plot_verification(track, telemetry, result, output, frames=(), videos=()):
         rate = (drift or {}).get("clock_rate")
     rate = 1.0 if rate is None else _number(rate, "Result clock rate")
     offset = _number(offset, "Result offset")
-    if not np.isfinite(offset) or not np.isfinite(rate) or rate <= 0:
-        raise ValueError("Result offset and clock rate must be finite; clock rate must be positive")
+    if rate <= 0:
+        raise ValueError("Result clock rate must be positive")
+    return offset, rate
+
+
+def plot_verification(track, telemetry, result, output, frames=()):
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+    except ImportError as exc:
+        raise RuntimeError("Verification plots require: pip install 'gps-video-sync[verify]'") from exc
+    if not isinstance(result, dict) or result.get("schema_version") != "2.0.0":
+        raise ValueError("Expected a schema_version 2.0.0 sync result")
+    if result.get("video") != telemetry.video:
+        raise ValueError("Result recording identity does not match current telemetry")
+    offset, rate = _alignment(result)
+    requests = [_recording_frame(telemetry, seconds) for seconds in frames]
     output = Path(output)
     if output.suffix.lower() != ".png":
         raise ValueError("--output must end in .png")
@@ -131,14 +148,13 @@ def plot_verification(track, telemetry, result, output, frames=(), videos=()):
         axes[-1].set_xlabel("UTC hours from track date midnight (may exceed 24)")
         for ax in axes:
             ax.grid(alpha=0.3)
-        fig.suptitle(f"Alignment check — {result.get('status', 'unknown')}; offset {offset:.3f} s")
+        fig.suptitle(f"{telemetry.video or 'Array telemetry'} | {result.get('status', 'unknown')} | offset {offset:.3f} s")
         fig.tight_layout()
         fig.savefig(output)
     finally:
         plt.close(fig)
-    for index, seconds in enumerate(frames):
-        path, local_time = _chapter_frame(telemetry, videos, seconds)
-        destination = output.with_name(f"{output.stem}-frame-{index:03d}-{_seconds(seconds)}s.png")
+    for index, (seconds, (path, local_time)) in enumerate(zip(frames, requests)):
+        destination = output.with_name(f"{output.stem}-{path.stem}-frame-{index:03d}-{_seconds(seconds)}s.png")
         subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-y", "-ss", _seconds(local_time),
                         "-protocol_whitelist", "file", "-i", f"file:{path}",
                         "-frames:v", "1", str(destination)],
