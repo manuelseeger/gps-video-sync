@@ -2,53 +2,74 @@
 
 ## Data contracts
 
-`read_track(path, format="igc", altitude="auto")` returns a `Track`.
-`read_video(path, source="gopro", hz=10, cache_dir=None)` reads one recording.
-`synchronize(track, telemetry)` returns a single `SyncResult`.
-`match_videos(track, paths, source="gopro", hz=10, cache_dir=None)` returns a list
-of independent `SyncResult` values in input order.
+`read_track(path, *, format="igc", altitude="auto")` returns a `Track`.
+`read_video(path, *, source="gopro", hz=10, cache_dir=None)` reads one recording
+and returns a `Telemetry`. A value that is not one `str` or `Path`, for example
+a list of paths, raises `ValueError`.
+`synchronize(track, telemetry)` returns one `SyncResult`.
+`match_videos(track, paths, *, source="gopro", hz=10, cache_dir=None)` returns a
+list of independent `SyncResult` values in input order.
 
 - `Track(time, latitude, longitude, altitude, date=None, altitude_source="gps")`
-  contains NumPy arrays. Time increases in UTC seconds from the track date's
-  midnight. Coordinates are in degrees. Altitude is in metres.
+  contains NumPy arrays. Time increases in UTC seconds from midnight of the
+  track date. Coordinates are in degrees. Altitude is in metres.
 - `Telemetry(time, channels, video=None, duration=None, gps_time=[], gps_utc=[], media_offset_seconds=0)`
-  contains increasing file-local video seconds and NumPy channel arrays.
-  Each channel has one row per time sample. `video` identifies the recording.
-  The GoPro source uses its canonical absolute path. `duration` bounds the
-  half-open recording interval `[0, duration)`.
-  `gps_time` contains local video seconds for camera GPS observations.
-  `gps_utc` contains the corresponding Unix UTC seconds.
-- `Telemetry.slice(start, end)` selects a half-open interval and subtracts
-  `start` from video and GPS times. It retains recording identity, sets duration
-  to `end - start`, and adds `start` to `media_offset_seconds`.
-  Nested slices accumulate the media offset. Frame extraction adds this offset
-  to slice-local seconds before seeking the original recording.
-  A slice's synchronization offset refers to the slice's start.
-- `SyncResult` contains recording identity in `video`, status, offset,
-  uncertainty, method, confidence, per-feature diagnostics, drift diagnostics,
-  date, and message. `media_offset_seconds` and `duration` identify the local
-  timeline used for matching. They copy the current telemetry values, including
-  for ambiguous results and failures with valid telemetry. The media offset is
-  `null` when extraction or telemetry validation fails. Duration is `null` when
-  unknown. Batch results also contain `input_file`, the canonical
-  input path. For NPZ input, `video` identifies the original recording while
+  contains increasing, nonnegative, file-local video seconds and NumPy channel
+  arrays. `gps_time` and `gps_utc` default to empty arrays. Each channel has one
+  row per time sample. `video` identifies the recording. The GoPro source uses
+  its canonical absolute path. `duration` bounds the half-open recording
+  interval `[0, duration)`. `gps_time` contains local video seconds for camera
+  GPS observations. `gps_utc` contains the related Unix UTC seconds.
+- `Telemetry.slice(start, end)` selects the half-open interval `[start, end)`
+  and subtracts `start` from video and GPS times. The bounds must be finite,
+  with `0 <= start < end`. When the duration is known, `end` must not exceed it.
+  The slice keeps the recording identity, sets the duration to `end - start`,
+  and adds `start` to `media_offset_seconds`. Nested slices add their media
+  offsets. Frame extraction adds this offset to slice-local seconds before it
+  seeks the original recording. The synchronization offset of a slice refers
+  to the start of the slice.
+- `SyncResult` contains the recording identity in `video`, status, offset,
+  uncertainty, method, confidence, per-feature data, drift data, date, and
+  message. `media_offset_seconds` and `duration` identify the local timeline
+  used for matching. They copy the current telemetry values, also for
+  ambiguous results and for failures with valid telemetry. The media offset is
+  `null` when extraction or telemetry validation fails. The duration is `null`
+  when unknown. Batch results also contain `input_file`, the canonical input
+  path. For NPZ input, `video` identifies the original recording and
   `input_file` identifies the archive. `to_dict()` uses schema `2.0.0`.
   Direct array-based callers can omit recording identity and duration.
-  Frame extraction requires both.
+  Frame extraction needs both.
 
-Batch matching validates the track, source, sample rate, and nonempty path
-sequence before it reads any file. Each file matches against the same track
-without evidence from other recordings. Gaps, overlaps, and unrelated camera
-clocks do not affect peers. Input permutations and subsets retain each full
-per-file result. Expected extraction and invalid-telemetry errors produce
-`failed` results for that file. Programming errors propagate.
-Insufficient motion evidence produces an `ambiguous` result with a reason.
-There is no automatic joining of split recordings.
-Repeated canonical input paths fail before extraction. Once a timeline has an
-`ok` or `ambiguous` result, other inputs with the same `video`,
-`media_offset_seconds`, and `duration` receive a per-file duplicate failure.
-These failures use the canonical input identity and have `null` media offset
-and duration. Distinct crops remain separate timelines.
+`synchronize` raises `ValueError` when the track or telemetry is not valid. It
+returns a `failed` result when the telemetry has fewer than two samples.
+
+### Independent batch matching
+
+`match_videos` checks the track, source, sample rate, and path sequence before
+it reads a file. An invalid value, an empty sequence, or a single path in place
+of a sequence raises `ValueError`.
+
+Each file is a separate recording. Each file matches against the same track
+with no data from other recordings. Gaps, overlaps, and unrelated camera clocks
+between files do not affect the other results. Input permutations and subsets
+give the same full result for each file. The function does not join split
+recordings, for example GoPro chapter files. Each chapter has its own result
+and local timeline.
+
+Expected extraction errors and invalid telemetry give a `failed` result for
+that file. These errors are `OSError`, `ValueError`, `EOFError`, and
+`zipfile.BadZipFile`. Other errors, for example programming errors, propagate.
+Insufficient motion evidence gives an `ambiguous` result with a reason.
+
+A repeated canonical input path fails before extraction. A symbolic link to an
+earlier input is a repeated path. When a timeline has an `ok` or `ambiguous`
+result, a later input with the same `video`, `media_offset_seconds`, and
+`duration` gets a duplicate failure. A failed result does not reserve its
+timeline. Duplicate failures use the canonical input path as `video` and have
+`null` media offset and duration. Different crops of one recording are
+separate timelines.
+
+### Time mapping
 
 The result uses this mapping:
 
@@ -56,28 +77,34 @@ The result uses this mapping:
 utc_seconds = video_seconds * clockRate + offset_seconds
 ```
 
-`videoStartUtcSeconds` aliases the offset. `video_start_utc` is an ISO timestamp
-when a track date and offset exist. `videoStartUtc` is its clock time.
-`utc_origin_date` is the track date. It is the origin of `offset_seconds` and of
-all track times. `dateUtc` is the UTC calendar date of the video start. The two
-dates differ when the video starts after the track date's midnight, for example
-an offset of 86410 seconds gives `utc_origin_date` 2026-01-01 and `dateUtc`
-2026-01-02. Without a track date, `dateUtc` and `utc_origin_date` are `null`.
+`videoStartUtcSeconds` is an alias of the offset. `video_start_utc` is an ISO
+timestamp when a track date and an offset exist. `videoStartUtc` is its clock
+time. `utc_origin_date` is the track date. It is the origin of `offset_seconds`
+and of all track times. `dateUtc` is the UTC calendar date of the video start.
+The two dates differ when the video starts on a different calendar day. For
+example, an offset of 86410 seconds gives `utc_origin_date` 2026-01-01 and
+`dateUtc` 2026-01-02. Without a date, `dateUtc` and `utc_origin_date` are
+`null`. A GPS result can get its date from camera GPS when the track has no
+date.
 
 `clockDriftDetected`, `clockRate`, and `estimatedAbsoluteUncertaintySeconds`
 report drift and uncertainty. An ambiguous result has no offset.
-`confidence.candidate_offset_seconds` is diagnostic, not an accepted alignment.
+`confidence.candidate_offset_seconds` is diagnostic data, not an accepted
+alignment.
 
 ## Track parsing
 
-The IGC reader excludes invalid fixes and unwraps a large reverse clock jump as
-midnight rollover. Track times can exceed 86400 seconds. An offset without a
-track date does not establish an absolute calendar timestamp.
+The IGC reader uses the first `HFDTE` or `HODTE` date. It excludes invalid fixes
+and fixes that do not increase in time. It unwraps a large reverse clock jump
+as midnight rollover, so track times can exceed 86400 seconds. An offset
+without a track date does not establish an absolute calendar timestamp.
 
 `altitude="auto"` uses varying, nonzero pressure altitude when available and GPS
 altitude otherwise. `"gps"` and `"pressure"` select the altitude explicitly.
-Interpolation leaves gaps larger than the greater of five seconds and three
-median fix intervals unfilled. GPS course below 3 m/s is excluded.
+
+Motion matching interpolates the track to whole seconds. It fills gaps only up
+to five seconds or three median fix intervals, whichever is greater. It
+excludes track features where the ground speed is below 3 m/s.
 
 ## GoPro extraction
 
@@ -87,10 +114,12 @@ The extractor reads one LRV or MP4 recording. The native MP4 reader inspects
 only the selected `gpmd` payloads at their validated positions inside `mdat`.
 The source file does not change. Extraction needs no external programs.
 
-Recording duration uses the first positive value from the video edit-list total,
-known `mdhd` duration, `stts` duration total, or known `mvhd` duration.
-The edit-list total includes leading empty edits. All-ones header durations
-mean unknown. Observations and resampled arrays use that file's local timeline.
+The recording duration comes from the video edit-list total when the video
+track has a populated edit list. Otherwise it is the first positive value from
+the known `mdhd` duration, the `stts` duration total, or the known `mvhd`
+duration. The edit-list total includes leading empty edits. All-ones header
+durations mean unknown.
+Observations and resampled arrays use the local timeline of that file.
 
 Sample times follow ISO edit mapping without a snap to packet boundaries:
 
@@ -100,9 +129,9 @@ sample_time = leading_empty_seconds + (composition_ticks - media_time) / track_s
 
 GoPro resampling permits at most 1,000,000 grid samples per recording.
 The source raises `ValueError` before grid allocation when `duration * hz` is
-nonfinite or exceeds this limit. The limit also applies to cached telemetry.
+not finite or exceeds this limit. The limit also applies to cached telemetry.
 
-A video with no `gpmd` samples raises `ValueError`. Missing channels are omitted.
+A video with no `gpmd` samples raises `ValueError`.
 
 `ctts` version 0 offsets are unsigned. Version 1 offsets are signed.
 The video origin is zero with a populated video edit list. Otherwise it is
@@ -111,55 +140,57 @@ All tracks use that common origin.
 
 The reader supports leading empty edits followed by one unit-rate media edit.
 It rejects multiple media edits, trailing empty edits, dwell edits, other rates,
-and fragmented MP4 files containing `moof` or `mvex`. GPMF edits that end before
-the video timeline are unsupported. A partial GPMF sample across a leading
-empty edit is also unsupported. Mixed sample descriptions and external media
-references are rejected. Ordinary audio, `tmcd`, and `fdsc` tracks are ignored.
-Self-contained URL and QuickTime alias data references are supported.
+and fragmented MP4 files that contain `moof` or `mvex`. It also rejects GPMF
+edits that end before the video timeline, partial GPMF samples across a leading
+empty edit, mixed sample descriptions, and external media references. It
+ignores ordinary audio, `tmcd`, and `fdsc` tracks. It supports self-contained
+URL and QuickTime alias data references.
 
 A partial sample keeps its complete duration and can have a negative start.
-Observations retain their uniform positions in that original interval.
+Observations keep their uniform positions in that original interval.
 The extractor then selects observations in `[0, recording_duration)`.
 For example, a 1.001-second sample with media time 0.300 starts at -0.300.
 Four observations occur at -0.300, -0.04975, 0.2005, and 0.45075 seconds.
-Only the last two remain. This ISO rule places chapter-01 fixture GPMF samples
-0.701 seconds later than FFmpeg's packet-boundary edit rule. Fixture sample-table
-tests check these positions.
-Samples that end at or before the media edit starts are omitted.
-The reader retains at most 64 MiB of metadata and visits at most 100000 boxes.
+Only the last two remain. This ISO rule places the GPMF samples of the
+`chapter-01.mp4` fixture 0.701 seconds later than the FFmpeg packet-boundary
+edit rule. Fixture sample-table tests check these positions.
+The reader omits samples that end at or before the start of the media edit.
+
+The reader keeps at most 64 MiB of metadata and visits at most 100000 boxes.
 It permits at most 128 tracks, 1024 edits per selected track, and 10000000
-samples across selected tracks. GPMF output is limited to 100000 samples with
-at most 16 MiB per payload. GPMF containers can nest at most eight levels.
+samples across selected tracks. The reader returns at most 100000 GPMF samples,
+with at most 16 MiB per payload. GPMF containers can nest at most eight levels.
 A limit violation raises `ValueError`.
 
 Available channels are `GYRO` in rad/s, `ACCL` in m/s², `GRAV` as native unit
-vectors, and `CORI` and `IORI` as native unit quaternions. Missing channels are
-omitted. Sensor gaps are NaN.
+vectors, and `CORI` and `IORI` as native unit quaternions. The extractor omits
+missing channels. Sensor gaps are NaN.
 
-Vector data is averaged before resampling. Quaternions are sign-continuous,
-interpolated, and normalized. Samples are placed uniformly within each packet's
-PTS and duration. These times support second-level alignment, not exact exposure
-timing. GYRO and ACCL retain native ZXY axes. GRAV uses a different native frame.
-The yaw proxy uses low-pass ACCL in the GYRO axes.
+The extractor averages vector data before resampling. It makes quaternions
+sign-continuous, then interpolates and normalizes them. It places samples
+uniformly within the PTS and duration of each packet. These times support
+second-level alignment, not exact exposure timing. GYRO and ACCL keep the
+native ZXY axes. GRAV uses a different native frame. The yaw proxy uses
+low-pass ACCL in the GYRO axes.
 
-GPS9 UTC days and seconds, or GPS5 with GPSU timestamps, provide absolute time.
-GPS9 takes priority. Only 3D fixes are used. File creation dates and the STMP
-sensor clock are not UTC references.
+GPS9 UTC days and seconds, or GPS5 with GPSU timestamps, supply absolute time.
+GPS9 takes priority. The extractor uses only 3D fixes. File creation dates and
+the STMP sensor clock are not UTC references.
 
 ### Per-file cache
 
 The default cache directory is `~/.cache/gps-video-sync`. Each recording has
-its own key, including canonical absolute path, file size, nanosecond
-modification time, sample rate, and extractor version `2.0.0`.
-Reordering or removing other files reuses that recording's cache.
+its own key. The key contains the canonical absolute path, file size,
+nanosecond modification time, sample rate, and cache version `2.0.0`.
+Reordering or removing other files reuses the cache of a recording.
 Size or modification-time changes invalidate the key.
-Writes are atomic. Corrupt caches are rebuilt. An unavailable cache does not
-stop extraction.
+Cache writes are atomic. The extractor rebuilds corrupt caches. An unavailable
+or read-only cache does not stop extraction.
 
-Cache files and exports contain absolute recording paths and can contain GPS
-coordinates and times. These values can identify users and flight locations.
-Shared exports need appropriate redaction. Frame extraction requires the
-original recording path to exist locally.
+Cache files and exports contain absolute recording paths and can contain camera
+GPS UTC times. Paths can show user names and directory names. Remove or
+replace this data before you share these files. Frame extraction needs the
+original recording path to exist as a local file.
 
 ## Plugins
 
@@ -170,8 +201,10 @@ original recording path to exist locally.
 Registrations can replace existing names.
 Package import registers `igc`, `gopro`, and `npz`.
 
-A track reader owns UTC unwrapping and altitude selection.
-A video source owns extraction and resampling for one recording.
+A track reader unwraps UTC times and selects altitude. A video source extracts
+and resamples telemetry for one recording. When a source returns no `video`,
+`read_video` sets it to the canonical input path.
+
 Motion matching uses uppercase `GYRO` and `ACCL` channels with three components
 and the units above. GPS-only sources can supply GPS observations without
 motion channels. The motion features are `yaw`, `gyro_norm`, `vertical`, and
@@ -179,102 +212,124 @@ motion channels. The motion features are `yaw`, `gyro_norm`, `vertical`, and
 
 ## CLI and telemetry formats
 
-`python -m gps_video_sync` and `gps-video-sync` expose the same commands.
+`python -m gps_video_sync` and `gps-video-sync` supply the same commands.
 `sync` accepts one or more recordings. `info`, `telemetry`, and `verify` each
-accept exactly one recording to keep export, plots, and frame times file-local.
+accept exactly one recording, so exports, plots, and frame times stay local to
+that file.
 
 Common options follow the command name:
 
 - `--source NAME` selects a video source. The default is `gopro`.
 - `--cache-dir PATH` passes a cache directory to the source plugin.
-- `--hz NUMBER` sets a positive finite telemetry sample rate. The default is 10.
+- `--hz NUMBER` sets a positive, finite telemetry sample rate. The default is 10.
+- `--track PATH` is necessary for `sync` and `verify`.
 - `--track-format NAME` selects a track reader for `sync` and `verify`.
 - `--altitude auto|gps|pressure` selects IGC altitude for `sync` and `verify`.
 
-`info` writes schema `2.0.0` JSON with `video`, `input_file`, duration, sample
-bounds, channel shapes, and GPS sample count.
-`telemetry --out` accepts `.npz` or `.json`.
+Invalid command-line arguments give exit code 1 and a usage message.
+
+`info` writes schema `2.0.0` JSON to stdout. It contains `video`, `input_file`,
+`duration`, `samples`, `start_seconds`, `end_seconds`, `channels` with array
+shapes, and `gps_samples`.
+`telemetry --out` accepts a path that ends in `.npz` or `.json`.
 
 ### Sync results
 
 `sync` writes a JSON object with `schema_version: "2.0.0"` and a `videos` list,
-including for one input. Each entry is a serialized `SyncResult`.
-`--json PATH` writes the document only to that file.
-All per-file results are written before the command returns a match failure.
+also for one input. Each entry is a serialized `SyncResult`. Entries are in
+input order. `--json PATH` writes the document only to that file. Otherwise
+the document goes to stdout. `sync` writes all per-file results before it
+returns a failure exit code.
 
-Exit codes are 0 when every match succeeds, 2 when any match is ambiguous and
-none fail, and 1 when any match fails or a run error occurs.
-Diagnostics on stderr identify the affected input file.
-Expected input and external-tool errors have no Python traceback.
+Exit codes are 0 when every match is `ok`, 2 when a match is `ambiguous` and no
+match is `failed`, and 1 when a match is `failed` or a run error occurs.
+For each result that is not `ok`, a line on stderr identifies the input file,
+the status, and the reason. Expected input and external-tool errors have no
+Python traceback.
 
 ### Verification and frames
 
 `verify` reads `--result` or synchronizes the single recording.
 A saved document must use schema `2.0.0` and contain a nonempty `videos` list.
-Entries need nonempty recording identities, valid statuses, and timeline
-metadata. Selection matches the current telemetry's `video`,
-`media_offset_seconds`, and `duration` values. If any matching entry has status
-`ok` or `ambiguous`, selection ignores matching `failed` entries. Exactly one
-entry must remain. Different crops of the same recording can share a document.
-Unrelated timelines need not be unique.
-An NPZ input selects by original recording and local timeline, not archive path.
-Missing metadata, duplicate matches for the current timeline, malformed entries,
-and mismatches are rejected.
-Direct `plot_verification` calls apply the same timeline check.
-`media_offset_seconds` must be finite and nonnegative. Only failed entries can
-use `null` for an unknown timeline, with `duration` also `null`.
-Otherwise, `duration` must be positive and finite or `null` when unknown.
+`verify` checks every entry, not only the selected entry. Each entry needs
+schema `2.0.0`, a nonempty `video`, a valid status, and timeline metadata.
+`confidence`, `per_feature`, and `drift` must be objects or `null`. Offsets
+must be finite. Uncertainties must be finite and nonnegative. An `ok` entry
+needs a valid alignment.
 
-A successful entry needs a finite `offset_seconds` or
-`videoStartUtcSeconds`. `clockRate` must be positive or `null`.
-When `clockRate` is `null`, `drift.clock_rate` is used.
-When both are absent or `null`, the clock rate is 1.
+Selection uses the `video`, `media_offset_seconds`, and `duration` values of
+the current telemetry. When a matching entry has status `ok` or `ambiguous`,
+selection ignores matching `failed` entries. Exactly one entry must remain.
+Different crops of the same recording can share a document. Unrelated
+timelines do not have to be unique. An NPZ input selects by original recording
+and local timeline, not by archive path. `verify` rejects missing metadata,
+duplicate matches for the current timeline, malformed entries, and mismatches.
+Direct `plot_verification` calls apply the same identity and timeline check.
+
+`media_offset_seconds` must be finite and nonnegative. Only failed entries can
+use `null` for an unknown timeline, and then `duration` must also be `null`.
+Otherwise, `duration` must be positive and finite, or `null` when unknown.
+
+A successful entry needs a finite `offset_seconds` or `videoStartUtcSeconds`.
+`clockRate` must be positive or `null`. When `clockRate` is `null`, `verify`
+uses `drift.clock_rate`. When both are absent or `null`, the clock rate is 1.
 Invalid values give exit code 1.
 
-The PNG plot compares normalized track and video motion on mapped UTC time.
-The title identifies the recording. The plot is a visual check, not a confidence
-score. A result without an offset cannot be plotted.
-`--frames` takes local recording seconds in `[0, duration)`.
-The duration endpoint is outside the interval.
-Frame paths and bounds come from current telemetry, not saved-result paths.
-Sliced telemetry applies its media offset when seeking.
-Frame PNG names include the recording basename and local time.
-FFmpeg receives an existing local `file:` path with only the `file` protocol
-allowed. Seek times use fixed-point seconds with six decimals.
+`verify` draws a plot only when the selected or computed result is `ok`. An
+`ambiguous` result gives exit code 2 and a `failed` result gives exit code 1,
+with no plot. `--output` must end in `.png`. The plot compares normalized track
+and video motion features on the mapped UTC axis. Without `GYRO` and `ACCL`,
+the plot shows track altitude and raw channel norms. The title identifies the
+recording, status, and offset. The plot is a visual check, not a confidence
+score.
+
+`--frames` takes local recording seconds in `[0, duration)`. The duration is
+outside the interval. Frame extraction needs a known duration and a local
+original recording. `verify` checks all frame times before it writes the plot.
+Frame paths and bounds come from the current telemetry, not from paths in the
+saved result. Sliced telemetry adds its media offset when it seeks.
+
+`verify` writes frame PNGs in the directory of the plot. A frame name contains
+the plot name, the recording file name without extension, the frame index,
+and the local time. FFmpeg receives an existing local `file:` path, with only
+the `file` protocol allowed. Seek times use fixed-point seconds with six
+decimals.
 
 ### Telemetry archives
 
-`npz` is an API and CLI source. It reads one pickle-free NPZ archive.
-A raw archive needs a finite, strictly increasing 1-D `time` array.
-Channel arrays use their channel names and must match its length.
-Optional `gps_time` and `gps_utc` arrays must be matching 1-D arrays.
-Without recording metadata, identity is the archive's canonical path and
-duration is unknown. Such an archive supports matching but not frame extraction.
-The source preserves stored sample times. Sample rate and cache options do not
-resample NPZ input.
+`npz` is an API and CLI source. It reads one NPZ archive without pickle
+support. A raw archive needs a 1-D `time` array that is finite, nonnegative,
+and strictly increasing. Channel arrays use their channel names and must match
+the length of `time`. Optional `gps_time` and `gps_utc` arrays must be 1-D
+arrays of the same length. Without recording metadata, the identity is the
+canonical archive path and the duration is unknown. Such an archive supports
+matching but not frame extraction. The source keeps stored sample times. The
+sample rate and cache options do not resample NPZ input, but `--hz` must still
+be positive and finite.
 
-Exports use schema `2.0.0` and preserve local arrays.
-NPZ reserves `time`, `gps_time`, `gps_utc`, `schema_version`, and `recording`.
-`recording` is a scalar JSON object with `video`, `duration`, and
-`media_offset_seconds`. NPZ import preserves these fields.
-Archives with `chapters` metadata or another schema version are rejected.
+Exports use schema `2.0.0` and keep the local arrays. NPZ reserves `time`,
+`gps_time`, `gps_utc`, `schema_version`, and `recording`. An NPZ export rejects a
+channel with one of these names or the name `chapters`. `recording` is a scalar
+JSON object with exactly `video`, `duration`, and `media_offset_seconds`. NPZ
+import keeps these fields. The source rejects archives with `chapters` data or
+another schema version.
 
 JSON telemetry contains `schema_version`, `time`, `channels`, `gps_time`,
-`gps_utc`, and `recording` with the same identity and duration.
+`gps_utc`, and `recording` with the same identity and timeline fields.
 Non-finite array values become `null`.
 JSON telemetry is an output format, not a video source.
 
-The repository check `python scripts/check_independent_videos.py` exercises the
-API and actual CLI with bundled media, permutations, subsets, cold and warm
-caches, exports, plots, and direct-seek frame comparisons.
-Cropped motion recordings and synthetic GPS recordings test gaps and overlaps.
-Mixed valid, weak, malformed, and missing inputs test failure isolation.
-The script requires the verification extra and `ffmpeg`.
+The repository check `python scripts/check_independent_videos.py` runs the API
+and the actual CLI with bundled media. It covers input permutations, subsets,
+cold and warm caches, exports, plots, and comparisons of frames with direct
+FFmpeg seeks. Cropped motion recordings and synthetic GPS recordings test gaps
+and overlaps. Mixed valid, weak, malformed, and missing inputs test failure
+isolation. The script needs the `verify` extra and `ffmpeg`.
 
-## Motion matching limits
+## Matching limits
 
 Camera GPS UTC is the primary reference when usable. Motion matching is the
-fallback when GPS time is absent or unusable. GPS time is usable when all of
+fallback when GPS time is absent or not usable. GPS time is usable when all of
 these conditions are true:
 
 - A track date exists, or the camera GPS establishes one.
@@ -285,35 +340,36 @@ these conditions are true:
 - The inliers span at least 10 seconds of video time.
 - Video time strictly increases across the inliers. GPS UTC increases from the
   first to the last inlier and never decreases by more than 0.1 seconds.
-- The fitted clock rate differs from 1 by at most 0.002 (7.2 seconds per hour),
-  plus three standard errors of the fitted rate, plus 0.2 seconds divided by the
-  GPS span. The last term allows for slow wander of up to 0.1 seconds over a
-  short span. 0.002 is more than ten times the usual
-  tolerance of camera clock crystals. Larger rates come from frozen, stepped, or
-  wrong UTC values.
-- The residual standard deviation is below 0.5 seconds.
+- The fitted clock rate differs from 1 by at most 0.002, plus three standard
+  errors of the fitted rate, plus 0.2 seconds divided by the GPS span.
+  A rate difference of 0.002 is 7.2 seconds per hour. The last term allows for
+  slow wander of up to 0.1 seconds over a short span. 0.002 is more than ten
+  times the usual tolerance of camera clock crystals. Larger rates come from
+  frozen, stepped, or wrong UTC values.
+- The residual standard deviation is less than 0.5 seconds.
 - No UTC step occurs. The check uses all finite observations, before outlier
   removal. It removes the rate between the medians of the first and last thirds
   of the observations. For window sizes of 3, 5, 10, 20, and 30 observations,
   up to half the observations, and at each position, it compares the median of
   the preceding window with the median of the following window. Near the start
   and end, a window shrinks to the available observations, down to one. The
-  difference is first reduced by the possible detrending rate error times the
-  time from the first to the last observation of the two windows. The rate
-  error is 0.1 seconds, plus the rate times the time ranges of both thirds,
-  divided by the distance between the third medians. A reduced difference of
-  more than 0.1 seconds, and of more than six standard errors of the white
-  noise between adjacent observations, is a step. The standard-error term is
-  at most 0.15 seconds. Noise within ±0.05 seconds cannot cause a step. A single
-  outlier inside the interval is not a step. A deviating first or last
+  check first reduces the difference by the possible detrending rate error
+  times the time from the first to the last observation of the two windows.
+  The rate error is 0.1 seconds, plus the rate times the time ranges of both
+  thirds, divided by the distance between the third medians. A reduced
+  difference of more than 0.1 seconds, and of more than six standard errors of
+  the white noise between adjacent observations, is a step. The standard-error
+  term is at most 0.15 seconds. Noise within ±0.05 seconds cannot cause a step.
+  A single outlier inside the interval is not a step. A deviating first or last
   observation is a step.
 - The GPS interval overlaps the track.
 - The estimated uncertainty is at most 2 seconds over the whole video timeline.
 
-GPS UTC values outside the years 1970 to 9998 are ignored. The fitted clock rate
-is used when it is significant and changes the mapping by more than 0.5 seconds
-over the combined interval of the video timeline and the GPS observations.
-Otherwise `clockRate` is 1 and the offset is the median at the GPS observations.
+Synchronization ignores GPS UTC values outside the years 1970 to 9998. It uses
+the fitted clock rate when the rate is significant and changes the mapping by
+more than 0.5 seconds over the combined interval of the video timeline and the
+GPS observations. Otherwise `clockRate` is 1 and the offset is the median at
+the GPS observations.
 
 A gap in the GPS observations is longer than 2 seconds and five median sample
 intervals. Gaps divide the observations into runs. The within-run rate is the
@@ -327,40 +383,55 @@ The uncertainty is 0.1 seconds at the center of the GPS observations, plus the
 possible rate error times the distance to the farther video end. The possible
 rate error is the difference between the used rate and the within-run rate,
 plus the within-run bound and three standard errors. The uncertainty also
-covers the clock of each run: at both video ends, the run's median offset at
-the within-run rate, plus 0.1 seconds, plus the within-run bound and three
-standard errors times the distance to the run's center. Therefore a short GPS
-interval far from the video start, short runs between gaps, or a step at a gap
-that the runs cannot separate from a rate change increase the uncertainty, and
-can prevent a GPS result.
+covers the clock of each run. The clock of a run uses the median offset of the
+run at the within-run rate. At both video ends, the uncertainty covers the
+difference from that clock, plus 0.1 seconds, plus the within-run bound and
+three standard errors times the distance to the center of the run. The reported
+uncertainty is at least 0.5 seconds and at least three residual standard
+deviations. A short GPS interval far from the video start or short runs between
+gaps increase the uncertainty. A step at a gap that the runs cannot separate
+from a rate change also increases it. This uncertainty can prevent a GPS
+result.
 
-When GPS time is present but unusable, `confidence.gps_rejected` gives the
+When GPS time is present but not usable, `confidence.gps_rejected` gives the
 reason. A motion result that is not accepted also states that reason in
 `message`.
 
-Filtering operates on separate valid runs. Search uses masked, normalized FFT
-correlations, then local 0.1-second refinement.
+The motion matcher filters each valid run separately. It searches with masked,
+normalized FFT correlations, then refines the offset locally in 0.1-second
+steps within 3 seconds.
 
 Each feature needs an overlap of at least 90 seconds and at least 65% of the
 shorter finite feature sequence. Finite samples exclude gaps, filter edges, and
-track fixes slower than 3 m/s. Camera motion before launch, for example on the
-ground, is still finite. Thus a 900-second clip with 540 seconds of flight
+track samples slower than 3 m/s. Camera motion before launch, for example on
+the ground, is still finite. Thus a 900-second clip with 540 seconds of flight
 motion and 360 seconds of pre-launch time does not meet the 65% rule and is
 ambiguous. Trim the video telemetry to the flight with `Telemetry.slice` when
 most of a clip is before launch or after landing. A track or video that spans
-less than two whole seconds is ambiguous. Acceptance requires a weighted score
-of at least 0.38, a margin of at least 0.08, and a best-to-alternative ratio of at
-least 1.2. Alternative offsets exclude a 25-second neighborhood around the best
-peak. At least two features must agree within eight seconds unless one feature
-is exceptionally strong and unique. These thresholds are heuristics, not
-calibrated probabilities. Accepted motion results include a two-second
-systematic uncertainty allowance.
+less than two whole seconds is ambiguous.
 
-Drift diagnostics fit non-overlapping 400-second windows. Detection requires at
-least four usable windows, a slope above three standard errors, and accumulated
-change above 0.5 seconds. `clockRate` stays at 1 when drift is not detected.
-`measured_clock_rate`, seconds per hour, and standard error remain separate
-diagnostics. No detected drift does not prove clock stability.
+Acceptance needs all of these conditions:
+
+- The weighted score is at least 0.38.
+- The margin to the best alternative is at least 0.08.
+- The ratio of the best score to the best alternative is at least 1.2.
+  Alternative offsets exclude a 25-second neighborhood around the best peak.
+- The local refinement does not stop at the edge of its 3-second range.
+- Two feature groups agree with the refined offset within 8 seconds, each with
+  a score above 0.3. The turn group is `yaw`, `gyro_norm`, and `gload`. The
+  other group is `vertical`. As an alternative, a weighted score above 0.7 with
+  a margin above 0.25 is sufficient.
+
+These thresholds are heuristics, not calibrated probabilities. Accepted motion
+results include a two-second systematic uncertainty allowance.
+
+Drift data comes from fits in non-overlapping 400-second windows. Detection
+needs at least four usable windows, with at least 80% of them consistent with
+a robust line. It also needs a slope above three standard errors and an
+accumulated change above 0.5 seconds. `clockRate` stays at 1 when the matcher
+detects no drift. `measured_clock_rate`, seconds per hour, and the standard
+error stay separate diagnostic values. No detected drift does not prove clock
+stability.
 
 Repeated turns, low motion, sensor noise, mounting differences, altitude noise,
 data gaps, and short overlap can weaken a match or produce a false match.
