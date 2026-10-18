@@ -173,14 +173,6 @@ The chapter-order check requires the verification dependencies and `ffmpeg`.
 It checks the real no-GPS fixtures in both orders, cold and shared caches,
 renamed files, reversed modification times, exports, plots, and boundary frames.
 
-## Releases
-
-Version tags start the release workflow. Stable tags such as `3.2.1` create a
-GitHub Release and publish to PyPI after approval. Preview tags such as
-`3.2.1-preview.1` create a GitHub pre-release and publish to TestPyPI after
-approval. See the [release procedure](https://github.com/manuelseeger/gps-video-sync/blob/main/RELEASING.md)
-for version mapping, Trusted Publishing, and verification.
-
 ## License
 
 [MIT](https://github.com/manuelseeger/gps-video-sync/blob/main/LICENSE).
