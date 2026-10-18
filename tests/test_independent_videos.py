@@ -160,3 +160,60 @@ def test_frame_seeks_use_current_recording_not_saved_input(tmp_path, monkeypatch
     assert calls[1][calls[1].index("-ss") + 1] == "3.000010"
     assert calls[0][calls[0].index("-protocol_whitelist") + 1] == "file"
     assert "current-frame-000" in calls[0][-1]
+
+
+def test_track_validated_once_before_batch(recordings, monkeypatch):
+    from gps_video_sync import sync
+    track, paths = recordings
+    calls = []
+    original = sync.validate_track
+    def validate(value):
+        calls.append(value)
+        original(value)
+    monkeypatch.setattr(sync, "validate_track", validate)
+    assert [r.status for r in match_videos(track, paths, source="npz")] == ["ok", "ok", "ok"]
+    assert len(calls) == 1 and calls[0] is track
+
+
+@pytest.mark.parametrize("command,options", [
+    ("info", []), ("telemetry", ["--out", "out.npz"]),
+    ("verify", ["--track", "unused.igc", "--output", "plot.png"]),
+])
+def test_single_recording_cli_commands_reject_multiple(command, options):
+    import subprocess
+    import sys
+    process = subprocess.run([sys.executable, "-m", "gps_video_sync", command,
+                              "one.mp4", "two.mp4", *options], capture_output=True, text=True)
+    assert process.returncode == 1
+    assert "unrecognized arguments: two.mp4" in process.stderr
+    assert "Traceback" not in process.stderr
+
+
+@pytest.mark.parametrize("status", [[], {}, "unknown", None])
+def test_saved_result_rejects_malformed_status(recordings, status):
+    track, paths = recordings
+    entry = match_videos(track, paths[:1], source="npz")[0].to_dict()
+    entry["status"] = status
+    with pytest.raises(ValueError, match="status"):
+        select_result(dict(schema_version="2.0.0", videos=[entry]), str(paths[0]))
+
+
+def test_invalid_path_isolated_from_valid_peer(recordings):
+    track, paths = recordings
+    expected = match_videos(track, paths[:1], source="npz")[0].to_dict()
+    results = match_videos(track, ["invalid" + chr(0) + ".npz", paths[0]], source="npz")
+    assert results[0].status == "failed"
+    assert "null" in results[0].message
+    assert results[1].to_dict() == expected
+
+
+@pytest.mark.parametrize("field", ["duration", "media_offset_seconds"])
+def test_oversized_metadata_is_isolated(recordings, tmp_path, field):
+    track, paths = recordings
+    archive = tmp_path / "oversized.npz"
+    metadata = dict(video="original.mp4", duration=20, media_offset_seconds=0)
+    metadata[field] = 10**400
+    np.savez(archive, time=np.arange(20.), recording=json.dumps(metadata))
+    results = match_videos(track, [archive, paths[0]], source="npz")
+    assert [r.status for r in results] == ["failed", "ok"]
+    assert "finite" in results[0].message

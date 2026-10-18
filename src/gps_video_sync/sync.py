@@ -319,6 +319,17 @@ def validate_track(track: Track) -> None:
         raise ValueError("Track coordinates and altitude must be finite")
 
 
+def _finite_seconds(value, name):
+    if isinstance(value, bool) or not isinstance(value, Real):
+        raise ValueError(f"{name} must be a finite number")
+    try:
+        finite = np.isfinite(float(value))
+    except OverflowError:
+        finite = False
+    if not finite:
+        raise ValueError(f"{name} must be a finite number")
+
+
 def validate_telemetry(telemetry: Telemetry) -> None:
     time = telemetry.time
     if np.ndim(time) != 1 or not np.all(np.isfinite(time)) or np.any(np.diff(time) <= 0) or np.any(time < 0):
@@ -326,11 +337,13 @@ def validate_telemetry(telemetry: Telemetry) -> None:
     if telemetry.video is not None and (not isinstance(telemetry.video, str) or not telemetry.video):
         raise ValueError("Recording identity must be a nonempty string")
     if telemetry.duration is not None:
-        if isinstance(telemetry.duration, bool) or not isinstance(telemetry.duration, Real) or not np.isfinite(telemetry.duration) or telemetry.duration <= 0:
+        _finite_seconds(telemetry.duration, "Recording duration")
+        if telemetry.duration <= 0:
             raise ValueError("Recording duration must be finite and positive")
         if len(time) and time[-1] >= telemetry.duration:
             raise ValueError("Telemetry samples must be inside recording duration")
-    if isinstance(telemetry.media_offset_seconds, bool) or not isinstance(telemetry.media_offset_seconds, Real) or not np.isfinite(telemetry.media_offset_seconds) or telemetry.media_offset_seconds < 0:
+    _finite_seconds(telemetry.media_offset_seconds, "Media offset")
+    if telemetry.media_offset_seconds < 0:
         raise ValueError("Media offset must be finite and nonnegative")
     for key, values in telemetry.channels.items():
         if np.ndim(values) == 0 or len(values) != len(time):

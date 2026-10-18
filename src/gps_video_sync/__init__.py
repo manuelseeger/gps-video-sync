@@ -36,8 +36,9 @@ def match_videos(track: Track, paths, *, source: str = "gopro", hz: float = 10,
         raise ValueError("Supply a nonempty sequence of video paths")
     results = []
     for path in paths:
-        identity = str(Path(path).expanduser().resolve())
+        identity = str(path)
         try:
+            identity = str(Path(path).expanduser().resolve())
             telemetry = read_video(path, source=source, hz=hz, cache_dir=cache_dir)
             validate_telemetry(telemetry)
         except (OSError, ValueError, EOFError, zipfile.BadZipFile) as exc:
