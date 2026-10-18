@@ -24,22 +24,21 @@ requires `ffmpeg` on `PATH`.
 
 ## Supported cameras
 
-The bundled test recordings are from a **GoPro HERO11 Black**. Other models
-below have compatible metadata according to GoPro's documentation, but have not
-been tested with this package. Metadata availability is not an end-to-end test
-of extraction, alignment, or frame verification.
+The bundled test recordings are from a GoPro HERO11 Black. GoPro documents
+compatible metadata for the other models below. This package has no test
+recordings from those models, so extraction, alignment, and frame verification
+remain untested.
 
-The built-in reader needs a timed GPMF (`gpmd`) track in the original video:
+The reader needs a timed GPMF track with the sample format `gpmd` in the original
+video. It uses these fields:
 
-- **GPS alignment:** `GPS9` supplies UTC and fix status directly. The older
-  `GPS5` format needs `GPSU` (UTC) and `GPSF` (fix status). Only valid 3D fixes
-  are accepted. `GPS9` takes priority when both formats occur in a packet.
-- **Motion alignment:** `GYRO` and `ACCL` supply the full set of motion features.
-  This path can work without camera GPS, subject to the overlap and motion
-  limits below.
-- **Additional telemetry:** `GRAV`, `CORI`, and `IORI` are extracted when present.
-  They are not required for alignment. The matcher derives its gravity estimate
-  from `ACCL`, not `GRAV`.
+- `GPS9` supplies UTC and fix status for GPS alignment. The older `GPS5` format
+  needs `GPSU` for UTC and `GPSF` for fix status. The reader accepts only valid
+  3D fixes. `GPS9` takes priority when both formats occur in a packet.
+- `GYRO` and `ACCL` supply the full set of motion features. Motion alignment can
+  work without camera GPS. The overlap and motion limits below still apply.
+- The reader also extracts `GRAV`, `CORI`, and `IORI` when present. Alignment
+  does not need these fields. The matcher estimates gravity from `ACCL`.
 
 | Camera | GPS metadata for UTC alignment | `GYRO` + `ACCL` | `GRAV` + `CORI` + `IORI` | Compatibility / test status |
 | --- | --- | --- | --- | --- |
@@ -51,7 +50,7 @@ The built-in reader needs a timed GPMF (`gpmd`) track in the original video:
 | HERO9 Black | `GPS5` + `GPSU` + `GPSF` | Yes | Yes | GPS and motion expected; untested |
 | HERO10 Black | `GPS5` + `GPSU` + `GPSF` | Yes | Yes | GPS and motion expected; untested |
 | HERO10 Black Bones | None | Yes | Yes | Motion only expected; untested |
-| **HERO11 Black** | **`GPS9`, plus legacy `GPS5`** | **Yes** | **Yes** | **Tested with bundled recordings** |
+| HERO11 Black | `GPS9`, plus legacy `GPS5` | Yes | Yes | Tested with bundled recordings |
 | HERO12 Black | None | Yes | Yes | Motion only expected; untested |
 | HERO13 Black | `GPS9` | Yes | Yes | GPS and motion expected; untested |
 | Fusion | `GPS5` + `GPSU` + `GPSF` | Yes | Not documented | Metadata compatible; 360 workflow untested |
@@ -59,31 +58,35 @@ The built-in reader needs a timed GPMF (`gpmd`) track in the original video:
 | MAX2 | `GPS9` | Yes | Yes | Metadata compatible; 360 workflow untested |
 | MISSION 1 family | `GPS9` | Yes | Yes | Metadata compatible per GoPro; untested |
 
-**Same extracted channel set as HERO11:** HERO8–10 Black and HERO13 Black
-provide GPS UTC plus all five motion channels. HERO12 Black and HERO10 Black
-Bones provide the five motion channels but no GPS UTC. MAX, MAX2, and MISSION 1
-also document the complete channel set; their recording formats and workflows
-need separate tests. HERO5–7 Black can supply both alignment paths without the
-optional orientation channels.
+HERO8, HERO9, HERO10, and HERO13 Black provide the same fields this package
+extracts from HERO11, including GPS UTC and all five motion channels. HERO12
+Black and HERO10 Black Bones provide the five motion channels but no GPS UTC.
+GoPro also documents the complete set for MAX, MAX2, and MISSION 1. Their
+recording formats need separate tests. HERO5, HERO6, and HERO7 Black can supply
+both alignment methods without the optional orientation channels.
 
 Use original, normal-speed recordings. Enable GPS on cameras that have it and
-wait for a satellite lock before recording. A GPS-capable model does not ensure
-usable fixes in every clip. Edited, transcoded, or stitched exports can omit the
-metadata track. For 360 cameras, this table describes sensor metadata only; it
-does not promise support for stitching, projection, or frame extraction from
-native 360 files. Supply chapters in recording order and check each recording
-with `gps-video-sync info`.
+wait for a satellite lock before recording. Some clips may still lack usable
+fixes. Edited, transcoded, or stitched exports can omit the metadata track.
+Supply chapters in recording order and check each recording with
+`gps-video-sync info`.
 
-Model names matter: the Black rows do not cover Silver, White, Mini, or the
-entry-level HERO models. Those variants, HERO4 and earlier cameras, external
-GPS accessories, and special recording modes are not confirmed by this matrix.
-Do not assume compatibility from a model number or the presence of a GPS chip.
+The 360 camera rows cover sensor metadata only. Stitching, projection, and
+frame extraction from native 360 files remain untested.
 
-Sources: [GoPro's model-by-model GPMF tables](https://github.com/gopro/gpmf-parser/blob/9a7150632892c7356c91145c889016f07b0ed48d/README.md#where-to-find-gpmf-data)
-(documented firmware includes HERO7 v1.8, HERO8 v2.5, and MAX v2.0), and
-[Gyroflow's GoPro motion-data notes](https://github.com/gyroflow/gyroflow-docs/blob/main/docs/cams/gopro.md).
-Firmware and recording mode can affect the available streams. The implementation
-uses the keys above, not a camera-model allowlist.
+The Black rows do not cover Silver, White, Mini, or entry-level HERO models.
+This matrix does not confirm those variants, HERO4 and earlier cameras,
+external GPS accessories, or special recording modes. A model number or GPS
+chip alone does not establish compatibility.
+
+The matrix uses these sources:
+
+- [GoPro's model-by-model GPMF tables](https://github.com/gopro/gpmf-parser/blob/9a7150632892c7356c91145c889016f07b0ed48d/README.md#where-to-find-gpmf-data).
+  The documented firmware includes HERO7 v1.8, HERO8 v2.5, and MAX v2.0.
+- [Gyroflow's GoPro motion-data notes](https://github.com/gyroflow/gyroflow-docs/blob/main/docs/cams/gopro.md).
+
+Firmware and recording mode can affect the available streams. The reader
+checks for metadata keys, not camera model names.
 
 ## Align a recording
 
