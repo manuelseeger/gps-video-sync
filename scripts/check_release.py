@@ -50,7 +50,7 @@ def check(directory, expected_version=None):
             source[str(PurePosixPath(*path.parts[1:]))] = archive.extractfile(member).read()
     allowed_source = {f"src/gps_video_sync/{name}" for name in MODULES} | {
         ".gitignore", "README.md", "LICENSE", "pyproject.toml", "PKG-INFO",
-        "docs/reference.md", "docs/releasing.md",
+        "docs/releasing.md",
     }
     if set(source) != allowed_source:
         raise ValueError(f"Unexpected or missing source files: {set(source) ^ allowed_source}")

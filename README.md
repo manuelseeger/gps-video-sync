@@ -72,9 +72,6 @@ data gaps, or low motion can produce ambiguous or false matches. Check the plot
 and distinctive events before you use an alignment. Short clips cannot establish
 clock stability.
 
-See the [API and format reference](https://github.com/manuelseeger/gps-video-sync/blob/main/docs/reference.md) for data contracts,
-plugins, telemetry formats, and matching limits.
-
 ## Run the tests
 
 ```sh
