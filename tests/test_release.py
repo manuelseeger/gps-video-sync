@@ -16,16 +16,20 @@ INDEX_SPEC = importlib.util.spec_from_file_location(
     "check_index", Path(__file__).resolve().parents[1] / "scripts/check_index.py")
 index = importlib.util.module_from_spec(INDEX_SPEC)
 INDEX_SPEC.loader.exec_module(index)
+TAG_SPEC = importlib.util.spec_from_file_location(
+    "release_tag", Path(__file__).resolve().parents[1] / "scripts/release_tag.py")
+tag = importlib.util.module_from_spec(TAG_SPEC)
+TAG_SPEC.loader.exec_module(tag)
 
 
 @pytest.fixture
-def archives(tmp_path):
-    version = "0.1.0"
+def archives(tmp_path, request):
+    version = getattr(request, "param", "0.1.0")
     prefix = f"gps_video_sync-{version}"
     info = f"{prefix}.dist-info"
-    metadata = b"Name: gps-video-sync\nVersion: 0.1.0\n"
+    metadata = f"Name: gps-video-sync\nVersion: {version}\n".encode()
     wheel = {f"gps_video_sync/{name}": b"" for name in release.MODULES}
-    wheel["gps_video_sync/__init__.py"] = b'__version__ = "0.1.0"\n'
+    wheel["gps_video_sync/__init__.py"] = f'__version__ = "{version}"\n'.encode()
     wheel.update({f"{info}/{name}": b"" for name in (
         "METADATA", "WHEEL", "entry_points.txt", "RECORD", "licenses/LICENSE")})
     wheel[f"{info}/METADATA"] = metadata
@@ -69,9 +73,48 @@ def test_index_hashes_match_both_archives(tmp_path, monkeypatch, changed):
         index.check(tmp_path, "0.1.0", "testpypi")
 
 
+@pytest.mark.parametrize("archives", ["0.1.0", "3.2.1rc1"], indirect=True)
 def test_release_archives(archives):
     _, _, write = archives
-    release.check(write(), "0.1.0")
+    release.check(write())
+
+
+@pytest.mark.parametrize("value,version,environment,prerelease", [
+    ("3.2.1", "3.2.1", "pypi", "false"),
+    ("0.1.0", "0.1.0", "pypi", "false"),
+    ("3.2.1-preview.1", "3.2.1rc1", "testpypi", "true"),
+    ("3.2.1-preview.12", "3.2.1rc12", "testpypi", "true"),
+])
+def test_release_tag_routing(value, version, environment, prerelease):
+    assert tag.release_config(value) == {
+        "version": version, "environment": environment, "prerelease": prerelease,
+    }
+
+
+@pytest.mark.parametrize("value", [
+    "v3.2.1", "3.2", "3.2.1rc1", "3.2.1-preview.0", "3.2.1-preview.01",
+    "03.2.1", "3.02.1", "3.2.01", "3.2.1-preview", "3.2.1-beta.1",
+    "3.2.1-preview.1-extra", "3.2.1\n", "3.2.1;echo unsafe",
+])
+def test_invalid_release_tags(value):
+    with pytest.raises(ValueError, match="Expected major.minor.patch"):
+        tag.release_config(value)
+
+
+@pytest.mark.parametrize("archives", ["3.2.1-preview.1", "3.2.1rc0", "03.2.1"], indirect=True)
+def test_noncanonical_package_versions(archives):
+    _, _, write = archives
+    with pytest.raises(ValueError, match="Invalid project name or version"):
+        release.check(write())
+
+
+@pytest.mark.parametrize("archives", ["3.2.1rc1"], indirect=True)
+def test_preview_tag_matches_canonical_archive_version(archives):
+    _, _, write = archives
+    config = tag.release_config("3.2.1-preview.1")
+    release.check(write(), config["version"])
+    with pytest.raises(ValueError, match="does not match tag"):
+        release.check(write(), "3.2.1")
 
 
 @pytest.mark.parametrize("name", ["sync.json", "tests/fixtures/flight.igc", "private.mp4"])

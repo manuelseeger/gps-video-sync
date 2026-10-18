@@ -25,8 +25,8 @@ def check(directory, expected_version=None):
         raise ValueError("Expected one wheel METADATA file")
     metadata = BytesParser().parsebytes(wheel[metadata_names[0]])
     version = metadata["Version"]
-    if metadata["Name"] != "gps-video-sync" or not re.fullmatch(r"\d+\.\d+\.\d+", version):
-        raise ValueError("Invalid project name or major.minor.patch version")
+    if metadata["Name"] != "gps-video-sync" or not re.fullmatch(r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)(?:rc[1-9][0-9]*)?", version):
+        raise ValueError("Invalid project name or version (expected major.minor.patch with optional rcN)")
     if expected_version and version != expected_version:
         raise ValueError(f"Version {version} does not match tag {expected_version}")
     dist_info = f"gps_video_sync-{version}.dist-info"
@@ -77,6 +77,6 @@ def check(directory, expected_version=None):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Check release archive contents and version consistency (standard library only).')
     parser.add_argument("directory", type=Path)
-    parser.add_argument("--version", help="Expected major.minor.patch Git tag")
+    parser.add_argument("--version", help="Expected canonical package version, such as 3.2.1 or 3.2.1rc1")
     args = parser.parse_args()
     check(args.directory, args.version)
