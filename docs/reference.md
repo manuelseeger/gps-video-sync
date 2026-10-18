@@ -162,9 +162,9 @@ Common options follow the command name.
 
 `info` writes JSON with sample bounds, channel shapes, GPS sample count, and
 chapter metadata. `telemetry --out` accepts `.npz` or `.json`.
-`sync` writes result JSON to stdout. `--json PATH` also saves the result,
-including ambiguous results. Expected input and tool errors go to stderr without
-a Python traceback.
+`sync` writes result JSON to stdout unless `--json PATH` is set. With that
+option, it writes the result only to the file, including ambiguous results.
+Expected input and tool errors go to stderr without a Python traceback.
 
 `verify` reads `--result` or runs synchronization. A saved result must contain a
 numeric `offset_seconds` or `videoStartUtcSeconds`. `clockRate` must be a
