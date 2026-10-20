@@ -8,20 +8,21 @@ import math
 import os
 from pathlib import Path
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, asdict
+import struct
 import zipfile
 
 import numpy as np
 from scipy.ndimage import uniform_filter1d
 
 from . import mp4
-from .gpmf import number, scaled, streams
-from .models import Telemetry
+from .gpmf import number, records, scaled, streams, MAX_DEPTH
+from .models import Telemetry, RecordingClock
 from .sync import validate_telemetry
 
 KEYS = ("ACCL", "GYRO", "GRAV", "CORI", "IORI")
 QUATERNIONS = ("CORI", "IORI")
-CACHE_VERSION = "2.0.0"
+CACHE_VERSION = "3.0.0"
 MAX_GRID_SAMPLES = 1_000_000
 GPS_EPOCH = datetime(2000, 1, 1, tzinfo=timezone.utc).timestamp()
 
@@ -64,6 +65,62 @@ class Recording:
     packets: int
     motion: dict
     gps: list
+    clock: RecordingClock | None = None
+
+
+def _counter(record) -> int:
+    formats = {"B": ">B", "S": ">H", "L": ">I", "J": ">Q"}
+    fmt = formats.get(record.typ)
+    if (fmt is None or record.count != 1 or record.size != struct.calcsize(fmt)
+            or len(record.data) != record.size):
+        raise ValueError("Unsupported sensor clock or sample counter")
+    return struct.unpack(fmt, record.data)[0]
+
+
+def _serials(buf: bytes, depth: int = 0) -> set[str]:
+    if depth > MAX_DEPTH:
+        raise ValueError("Camera serial nesting is too deep")
+    cameras = set()
+    for record in records(buf):
+        if record.key == "CASN":
+            if record.typ != "c":
+                raise ValueError("Unsupported camera serial")
+            serial = record.data.decode("ascii").rstrip("\0")
+            if not serial:
+                raise ValueError("Empty camera serial")
+            cameras.add(serial)
+        elif record.typ == "\0":
+            cameras.update(_serials(record.data, depth + 1))
+    return cameras
+
+
+def _clock(observations: dict, duration: float, cameras: set[str]) -> RecordingClock | None:
+    counters, clocks = {}, {}
+    if len(cameras) > 1:
+        return None
+    for key, packets in observations.items():
+        if not packets:
+            continue
+        if any(p is None for p in packets):
+            return None
+        pts, stamps, counts, totals = zip(*packets)
+        if (len(packets) < 3 or any(c <= 0 for c in counts)
+                or totals[0] < counts[0]
+                or any(b - a != c for a, b, c in zip(totals, totals[1:], counts[1:]))):
+            return None
+        counters[key] = (totals[0] - counts[0], totals[-1])
+        stamps = np.asarray(stamps, dtype=float) / 1e6
+        obs = stamps - pts
+        if np.any(np.diff(stamps) <= 0) or np.ptp(obs) > .02:
+            return None
+        origin = float(np.median(obs))
+        reach = float(np.max(abs(obs - origin)) + .002 * max(0., pts[0], duration - pts[-1]))
+        clocks[key] = (origin, reach)
+    for key in ("CORI", "IORI", "GRAV", "ACCL", "GYRO"):
+        if key in clocks:
+            origin, reach = clocks[key]
+            return RecordingClock(origin, reach, counters, next(iter(cameras), None))
+    return None
 
 
 def _recording(path: Path) -> Recording:
@@ -71,6 +128,9 @@ def _recording(path: Path) -> Recording:
     duration = timeline.duration
     data = {key: [] for key in KEYS}
     gps5, gps9 = [], []
+    observations = {key: [] for key in KEYS}
+    cameras = set()
+    serial_valid = True
     with path.open("rb") as handle:
         for sample in timeline.samples:
             pts, interval = sample.time, sample.duration
@@ -78,6 +138,10 @@ def _recording(path: Path) -> Recording:
             buf = handle.read(sample.size)
             if len(buf) != sample.size:
                 raise ValueError("Truncated GPMF packet in video file")
+            try:
+                cameras.update(_serials(buf))
+            except (ValueError, UnicodeDecodeError):
+                serial_valid = False
             packet_gps5, packet_gps9 = [], []
             has_gps9 = False
             for stream in streams(buf):
@@ -85,6 +149,12 @@ def _recording(path: Path) -> Recording:
                 for key in KEYS:
                     if key not in fields:
                         continue
+                    try:
+                        observation = (pts, _counter(fields["STMP"]), fields[key].count,
+                                       _counter(fields["TSMP"]))
+                    except (KeyError, ValueError):
+                        observation = None
+                    observations[key].append(observation)
                     values = scaled(fields[key], fields)
                     expected = 4 if key in QUATERNIONS else 3
                     if values.shape[1] != expected:
@@ -111,7 +181,8 @@ def _recording(path: Path) -> Recording:
                 gps9.extend(packet_gps9)
             else:
                 gps5.extend(packet_gps5)
-    return Recording(duration, len(timeline.samples), data, gps5 + gps9)
+    return Recording(duration, len(timeline.samples), data, gps5 + gps9,
+                     _clock(observations, duration, cameras) if serial_valid else None)
 
 
 def _resample(blocks: list, grid: np.ndarray, key: str, hz: float) -> np.ndarray | None:
@@ -178,6 +249,11 @@ def _load_cache(path: Path, hz: float) -> Telemetry | None:
                    for k, v in result.channels.items()):
                 return None
             validate_telemetry(result)
+            if "clock" not in meta:
+                return None
+            result.clock = RecordingClock.from_dict(meta["clock"])
+            if meta["clock"] is not None and result.clock is None:
+                return None
             return result
     except (OSError, ValueError, KeyError, TypeError, EOFError, zipfile.BadZipFile):
         return None
@@ -190,7 +266,8 @@ def _save_cache(path: Path, result: Telemetry) -> None:
         with tempfile.NamedTemporaryFile(dir=path.parent, suffix=".npz", delete=False) as handle:
             temporary = handle.name
             metadata = {"version": CACHE_VERSION, "channels": list(result.channels),
-                        "video": result.video, "duration": result.duration}
+                        "video": result.video, "duration": result.duration,
+                        "clock": asdict(result.clock) if result.clock is not None else None}
             np.savez_compressed(handle, metadata=json.dumps(metadata), time=result.time,
                                 gps_time=result.gps_time, gps_utc=result.gps_utc, **result.channels)
         os.replace(temporary, path)
@@ -238,6 +315,7 @@ class GoProSource:
             gps_time, gps_utc = pairs.T
         else:
             gps_time, gps_utc = np.empty(0), np.empty(0)
-        result = Telemetry(grid, channels, str(path), local.duration, gps_time, gps_utc)
+        result = Telemetry(grid, channels, str(path), local.duration, gps_time, gps_utc,
+                           clock=local.clock)
         _save_cache(cache, result)
         return result

@@ -3,7 +3,7 @@ import json
 
 import numpy as np
 
-from .models import Telemetry
+from .models import Telemetry, RecordingClock
 from .sync import validate_telemetry
 
 
@@ -26,12 +26,14 @@ class NPZSource:
             metadata = json.loads(str(data["recording"].item())) if "recording" in data else {}
             if not isinstance(metadata, dict):
                 raise ValueError("NPZ recording metadata must be an object")
-            if "recording" in data and set(metadata) != {"video", "duration", "media_offset_seconds"}:
+            if "recording" in data and set(metadata) - {"clock"} != {"video", "duration", "media_offset_seconds"}:
                 raise ValueError("NPZ recording needs video, duration and media_offset_seconds")
             result = Telemetry(time, channels, metadata.get("video", str(path)),
                                metadata.get("duration"),
                                np.asarray(data["gps_time"], dtype=float) if "gps_time" in data else np.empty(0),
                                np.asarray(data["gps_utc"], dtype=float) if "gps_utc" in data else np.empty(0),
-                               metadata.get("media_offset_seconds", 0.))
+                               metadata.get("media_offset_seconds", 0.),
+                               RecordingClock.from_dict(metadata.get("clock"))
+                               if metadata.get("media_offset_seconds", 0.) == 0 else None)
         validate_telemetry(result)
         return result

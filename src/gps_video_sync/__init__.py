@@ -1,4 +1,4 @@
-from .models import Track, Telemetry, SyncResult
+from .models import Track, Telemetry, SyncResult, RecordingClock
 from .plugins import (TrackReader, VideoSource, register_track, register_video,
                       read_track, read_video)
 from .igc import IGCReader
@@ -17,7 +17,7 @@ def synchronize(track: Track, telemetry: Telemetry) -> SyncResult:
 
 def match_videos(track: Track, paths, *, source: str = "gopro", hz: float = 10,
                  cache_dir=None) -> list[SyncResult]:
-    """Match each recording independently, retaining input order and failures."""
+    """Match recordings independently, then apply evidence-based continuous shots."""
     import math
     from pathlib import Path
     import zipfile
@@ -35,10 +35,12 @@ def match_videos(track: Track, paths, *, source: str = "gopro", hz: float = 10,
     if not paths or any(not isinstance(p, (str, Path)) for p in paths):
         raise ValueError("Supply a nonempty sequence of video paths")
     results = []
+    recordings = []
     seen_paths = set()
     accepted_timelines = set()
     for path in paths:
         identity = str(path)
+        telemetry = None
         try:
             try:
                 identity = str(Path(path).expanduser().resolve())
@@ -53,6 +55,7 @@ def match_videos(track: Track, paths, *, source: str = "gopro", hz: float = 10,
             if timeline in accepted_timelines:
                 raise ValueError("Duplicate recording timeline")
         except (OSError, ValueError, EOFError, zipfile.BadZipFile) as exc:
+            telemetry = None
             result = SyncResult("failed", video=identity, message=str(exc), date=track.date)
         else:
             result = _synchronize(track, telemetry)
@@ -60,4 +63,6 @@ def match_videos(track: Track, paths, *, source: str = "gopro", hz: float = 10,
                 accepted_timelines.add(timeline)
         result.input_file = identity
         results.append(result)
-    return results
+        recordings.append(telemetry)
+    from .shots import match_shots
+    return match_shots(track, recordings, results)

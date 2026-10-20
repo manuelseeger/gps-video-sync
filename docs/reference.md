@@ -8,18 +8,24 @@ and returns a `Telemetry`. A value that is not one `str` or `Path`, for example
 a list of paths, raises `ValueError`.
 `synchronize(track, telemetry)` returns one `SyncResult`.
 `match_videos(track, paths, *, source="gopro", hz=10, cache_dir=None)` returns a
-list of independent `SyncResult` values in input order.
+list of file-local `SyncResult` values in input order.
 
 - `Track(time, latitude, longitude, altitude, date=None, altitude_source="gps")`
   contains NumPy arrays. Time increases in UTC seconds from midnight of the
   track date. Coordinates are in degrees. Altitude is in metres.
-- `Telemetry(time, channels, video=None, duration=None, gps_time=[], gps_utc=[], media_offset_seconds=0)`
+- `Telemetry(time, channels, video=None, duration=None, gps_time=[], gps_utc=[], media_offset_seconds=0, clock=None)`
   contains increasing, nonnegative, file-local video seconds and NumPy channel
   arrays. `gps_time` and `gps_utc` default to empty arrays. Each channel has one
   row per time sample. `video` identifies the recording. The GoPro source uses
   its canonical absolute path. `duration` bounds the half-open recording
   interval `[0, duration)`. `gps_time` contains local video seconds for camera
   GPS observations. `gps_utc` contains the related Unix UTC seconds.
+  `clock` is optional validated `RecordingClock` continuity evidence.
+- `RecordingClock(origin_seconds, reach_seconds, sample_counters, camera=None)`
+  contains a finite sensor-clock origin at local video time zero and a finite,
+  nonnegative origin error bound. `sample_counters` maps stream names to exact
+  integer `(start, end)` cumulative counter endpoints, with `0 <= start < end`.
+  `camera` is an optional nonempty serial number. The sensor clock is not UTC.
 - `Telemetry.slice(start, end)` selects the half-open interval `[start, end)`
   and subtracts `start` from video and GPS times. The bounds must be finite,
   with `0 <= start < end`. When the duration is known, `end` must not exceed it.
@@ -27,7 +33,8 @@ list of independent `SyncResult` values in input order.
   and adds `start` to `media_offset_seconds`. Nested slices add their media
   offsets. Frame extraction adds this offset to slice-local seconds before it
   seeks the original recording. The synchronization offset of a slice refers
-  to the start of the slice.
+  to the start of the slice. Every slice clears `clock`, including a slice of
+  the full duration. Counter endpoints cannot be reused for a crop.
 - `SyncResult` contains the recording identity in `video`, status, offset,
   uncertainty, method, confidence, per-feature data, drift data, date, and
   message. `media_offset_seconds` and `duration` identify the local timeline
@@ -43,18 +50,56 @@ list of independent `SyncResult` values in input order.
 `synchronize` raises `ValueError` when the track or telemetry is not valid. It
 returns a `failed` result when the telemetry has fewer than two samples.
 
-### Independent batch matching
+### Batch matching and continuous chapters
 
 `match_videos` checks the track, source, sample rate, and path sequence before
 it reads a file. An invalid value, an empty sequence, or a single path in place
 of a sequence raises `ValueError`.
 
-Each file is a separate recording. Each file matches against the same track
-with no data from other recordings. Gaps, overlaps, and unrelated camera clocks
-between files do not affect the other results. Input permutations and subsets
-give the same full result for each file. The function does not join split
-recordings, for example GoPro chapter files. Each chapter has its own result
-and local timeline.
+Each file first matches the track independently. The function then detects
+continuous chapters from `RecordingClock` evidence. An edge from A to B needs
+all of these conditions:
+
+- The absolute difference between B's clock origin and A's origin plus A's
+  duration, plus both error bounds, is at most 0.05 seconds.
+- At least one stream has cumulative counters in both files. Every shared
+  stream has exactly equal A-end and B-start counters.
+- Both durations are known, both media offsets are zero, and B's origin is
+  later than A's origin. Available camera serials do not conflict.
+
+Names and input order do not establish edges. A chain becomes a `Shot` with
+chronologically ordered membership. A branch keeps each member independent
+with ambiguous shot metadata. Conflicting serials anywhere in a chain also
+veto grouping, including a chain with an intermediate file without a serial.
+Missing evidence leaves a file independent. Sensor clocks and counters do not
+identify a recording session. Files from separate cameras with coincident clocks
+and counters can satisfy these checks. Check the verification plots before use.
+
+A continuous shot concatenates local telemetry on cumulative file durations
+and runs the existing single-recording matcher. A failed independent member
+cannot be promoted. A group result that is not `ok` retains all independent
+results. A GPS step reported on the shot but on no independent member also
+retains them, even when the shot has an accepted motion fit. The projected
+mapping must agree with every independent `ok` mapping at both ends of that
+member, within the sum of the two uncertainty bounds. A contradiction retains
+all independent results. Unexpected matcher errors propagate.
+
+Each projected member keeps its recording identity, media offset, duration,
+and date. Offsets use the left fold `O_next = O + clockRate * duration` with
+no rounding, so each end equals the next start as a floating-point value.
+Input permutations give the same result per recording. A subset of a
+continuous shot can give a different result. Unrelated inputs retain their
+independent results.
+
+Every result has `shot.status`. `single` means independent matching without
+a candidate group. `joined` means projection was applied. `ambiguous` means
+a candidate group or branch retained independent results. Group metadata
+also has `members` in chronological order, `index`, `start_seconds` on the
+candidate shot timeline, and `reason`. Branch members have singleton metadata.
+Joined results label `shot.diagnostics_coordinates` as `shot`. Their
+`confidence`, `per_feature`, and `drift` diagnostics, including candidate
+offsets, window midpoints, and drift intercepts, refer to the shot timeline.
+The top-level offset and the identity fields remain file-local.
 
 Expected extraction errors and invalid telemetry give a `failed` result for
 that file. These errors are `OSError`, `ValueError`, `EOFError`, and
@@ -177,19 +222,40 @@ GPS9 UTC days and seconds, or GPS5 with GPSU timestamps, supply absolute time.
 GPS9 takes priority. The extractor uses only 3D fixes. File creation dates and
 the STMP sensor clock are not UTC references.
 
+### Continuity evidence
+
+The reader extracts sensor `STMP` microseconds and cumulative integer `TSMP`
+counters before resampling. For each motion stream, every packet needs both
+fields. At least three packets are required. Timestamps must strictly increase,
+and `STMP / 1e6 - packet_pts` must span at most 0.02 seconds. Counter increments
+must equal the current packet's sample count. The endpoints are
+`(first_TSMP - first_count, last_TSMP)`. Unsupported or incomplete optional
+clock evidence clears the clock without removing ordinary telemetry.
+
+The origin is the median of `STMP / 1e6 - packet_pts` in the first available
+stream in `CORI`, `IORI`, `GRAV`, `ACCL`, `GYRO` order. Its error bound is the
+maximum absolute deviation from the median, plus 0.002 times the larger
+unobserved interval at the video ends. Valid endpoints from every motion stream
+are retained. `CASN`, when present, supplies a serial-number veto. Unsupported,
+malformed, or conflicting serials clear the continuity evidence.
+
+The bundled HERO11 chapters test continuity without serial numbers. A
+synchronized pair of different cameras with coincident clocks and counters is
+a remaining false-join risk. Two-camera negative media are not available.
+
 ### Per-file cache
 
 The default cache directory is `~/.cache/gps-video-sync`. Each recording has
 its own key. The key contains the canonical absolute path, file size,
-nanosecond modification time, sample rate, and cache version `2.0.0`.
+nanosecond modification time, sample rate, and cache version `3.0.0`.
 Reordering or removing other files reuses the cache of a recording.
 Size or modification-time changes invalidate the key.
 Cache writes are atomic. The extractor rebuilds corrupt caches. An unavailable
 or read-only cache does not stop extraction.
 
 Cache files and exports contain absolute recording paths and can contain camera
-GPS UTC times. Paths can show user names and directory names. Remove or
-replace this data before you share these files. Frame extraction needs the
+GPS UTC times and serial numbers. Paths can show user names and directory names.
+Remove or replace this data before you share these files. Frame extraction needs the
 original recording path to exist as a local file.
 
 ## Plugins
@@ -310,21 +376,26 @@ be positive and finite.
 Exports use schema `2.0.0` and keep the local arrays. NPZ reserves `time`,
 `gps_time`, `gps_utc`, `schema_version`, and `recording`. An NPZ export rejects a
 channel with one of these names or the name `chapters`. `recording` is a scalar
-JSON object with exactly `video`, `duration`, and `media_offset_seconds`. NPZ
-import keeps these fields. The source rejects archives with `chapters` data or
-another schema version.
+JSON object with `video`, `duration`, and `media_offset_seconds`, plus optional
+`clock`. NPZ import keeps these fields. `clock` contains `origin_seconds`,
+`reach_seconds`, `sample_counters`, and optional `camera`. Counter endpoints
+are JSON integer pairs. Missing or malformed optional clocks leave ordinary
+telemetry and matching usable. A nonzero media offset discards the clock.
+The source rejects archives with `chapters` data or another schema version.
 
 JSON telemetry contains `schema_version`, `time`, `channels`, `gps_time`,
 `gps_utc`, and `recording` with the same identity and timeline fields.
 Non-finite array values become `null`.
 JSON telemetry is an output format, not a video source.
 
-The repository check `python scripts/check_independent_videos.py` runs the API
-and the actual CLI with bundled media. It covers input permutations, subsets,
-cold and warm caches, exports, plots, and comparisons of frames with direct
-FFmpeg seeks. Cropped motion recordings and synthetic GPS recordings test gaps
-and overlaps. Mixed valid, weak, malformed, and missing inputs test failure
-isolation. The script needs the `verify` extra and `ffmpeg`.
+The repository check `python scripts/check_continuous_videos.py` runs the API
+and the actual CLI with bundled media. It covers exact drift-aware boundaries,
+input permutations, subsets, cold and warm caches, cache rebuilds, exports,
+crops, saved-result selection, plots, and direct FFmpeg frame comparisons.
+Synthetic recordings test non-unit drift, weak-chapter rescue, missing middle
+files, gaps, overlaps, missing and mismatched counters, branching, and failed
+members. Real motion with synthetic GPS tests contradictory strong fits and
+GPS steps. The script needs the `verify` extra and `ffmpeg`.
 
 ## Matching limits
 
