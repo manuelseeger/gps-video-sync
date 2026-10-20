@@ -2,6 +2,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field, asdict
 from datetime import date, datetime, timezone, timedelta
 from typing import Any
+from numbers import Real
+import math
 import numpy as np
 
 @dataclass
@@ -13,6 +15,42 @@ class Track:
     date: date | None = None
     altitude_source: str = "gps"
 
+@dataclass(frozen=True)
+class RecordingClock:
+    origin_seconds: float
+    reach_seconds: float
+    sample_counters: dict[str, tuple[int, int]]
+    camera: str | None = None
+
+    def __post_init__(self):
+        for value in (self.origin_seconds, self.reach_seconds):
+            if isinstance(value, bool) or not isinstance(value, Real) or not math.isfinite(value):
+                raise ValueError("Recording clock needs finite origin and error bound")
+        if self.reach_seconds < 0:
+            raise ValueError("Recording clock error bound must be nonnegative")
+        if self.camera is not None and (not isinstance(self.camera, str) or not self.camera):
+            raise ValueError("Recording clock camera must be a nonempty string")
+        if not isinstance(self.sample_counters, dict) or not self.sample_counters:
+            raise ValueError("Recording clock needs sample counters")
+        counters = {}
+        for stream, endpoints in self.sample_counters.items():
+            if (not isinstance(stream, str) or not stream
+                    or not isinstance(endpoints, (list, tuple)) or len(endpoints) != 2
+                    or any(type(v) is not int or v < 0 for v in endpoints)
+                    or endpoints[1] <= endpoints[0]):
+                raise ValueError("Recording clock needs exact increasing integer counter endpoints")
+            counters[stream] = tuple(endpoints)
+        object.__setattr__(self, "sample_counters", counters)
+
+    @classmethod
+    def from_dict(cls, value) -> RecordingClock | None:
+        if not isinstance(value, dict):
+            return None
+        try:
+            return cls(**value)
+        except (ValueError, TypeError, OverflowError):
+            return None
+
 @dataclass
 class Telemetry:
     time: np.ndarray
@@ -23,6 +61,7 @@ class Telemetry:
     gps_utc: np.ndarray = field(default_factory=lambda: np.empty(0))
 
     media_offset_seconds: float = 0.
+    clock: RecordingClock | None = None
 
     def slice(self, start: float, end: float) -> Telemetry:
         if not np.isfinite(start) or not np.isfinite(end) or start < 0 or end <= start:
@@ -55,6 +94,7 @@ class SyncResult:
     message: str = ""
     media_offset_seconds: float | None = None
     duration: float | None = None
+    shot: dict[str, Any] = field(default_factory=lambda: {"status": "single"})
 
     @property
     def video_start_utc(self) -> str | None:

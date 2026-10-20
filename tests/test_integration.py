@@ -49,6 +49,9 @@ def test_extraction(flight, index):
         assert np.isfinite(channel).mean() > .99
     assert len(telemetry.gps_time) == 0
     assert telemetry.duration == pytest.approx([8999991 / 30000, 9000992 / 30000][index], abs=1e-9)
+    assert telemetry.clock is not None
+    assert telemetry.clock.origin_seconds == pytest.approx([1814.151224, 2114.151224][index], abs=1e-6)
+    assert telemetry.clock.sample_counters["ACCL"] == [(367094, 427870), (427870, 488647)][index]
 
 
 @pytest.mark.ffprobe
@@ -131,20 +134,63 @@ def test_crops(flight, start, duration, status):
 
 
 def test_permutations_subsets_api_and_cli(flight, tmp_path):
-    track, _, paths = flight
+    track, recordings, paths = flight
     baseline = {r.video: r.to_dict() for r in match_videos(track, paths, cache_dir=tmp_path / "cache")}
+    first, second = baseline.values()
+    assert [first["offset_seconds"], second["offset_seconds"]] == [36160.0, 36459.9997]
+    assert abs(second["offset_seconds"] - synchronize(track, recordings[1]).offset_seconds) < .001
+    assert first["shot"]["status"] == second["shot"]["status"] == "joined"
+    assert second["offset_seconds"] == first["offset_seconds"] + first["clockRate"] * recordings[0].duration
     for order in (paths[::-1], paths, paths[:1], paths[1:]):
         results = match_videos(track, order, cache_dir=tmp_path / "cache")
-        assert [r.to_dict() for r in results] == [baseline[str(p.resolve())] for p in order]
+        expected = ([baseline[str(p.resolve())] for p in order] if len(order) == 2 else
+                    [dict(synchronize(track, recordings[paths.index(p)]).to_dict(),
+                          input_file=str(p.resolve())) for p in order])
+        assert [r.to_dict() for r in results] == expected
         proc = subprocess.run([sys.executable, "-m", "gps_video_sync", "sync", *map(str, order),
                                "--track", str(FIXTURES / "flight.igc"),
                                "--cache-dir", str(tmp_path / "cli-cache")], capture_output=True, text=True)
         assert proc.returncode == 0, proc.stderr
         document = json.loads(proc.stdout)
         assert document["schema_version"] == "2.0.0"
-        assert document["videos"] == [baseline[str(p.resolve())] for p in order]
+        assert document["videos"] == expected
     assert len(list((tmp_path / "cache").glob("*.npz"))) == 2
     assert len(list((tmp_path / "cli-cache").glob("*.npz"))) == 2
+
+
+@pytest.mark.parametrize("contradiction", ["strong_fit", "gps_step"])
+def test_grouping_contradictions_retain_real_independent_matches(flight, tmp_path, contradiction):
+    from dataclasses import replace
+    from datetime import datetime, timezone
+    from gps_video_sync.cli import _export
+    from gps_video_sync.shots import concatenate
+
+    track, recordings, _ = flight
+    epoch = datetime.combine(track.date, datetime.min.time(), timezone.utc).timestamp()
+    first = replace(recordings[0])
+    second = replace(recordings[1], gps_time=recordings[1].time,
+                     gps_utc=epoch + 36160. + first.duration + recordings[1].time
+                     + (20 if contradiction == "strong_fit" else 1))
+    if contradiction == "gps_step":
+        first.gps_time = first.time
+        first.gps_utc = epoch + 36160. + first.time
+    paths = [tmp_path / f"chapter-{i}.npz" for i in (1, 2)]
+    for t, p in zip((first, second), paths):
+        _export(t, p)
+    baseline = [match_videos(track, [p], source="npz")[0].to_dict() for p in paths]
+    assert [r["status"] for r in baseline] == ["ok", "ok"]
+    combined = synchronize(track, concatenate([first, second]))
+    assert combined.status == "ok"
+    if contradiction == "gps_step":
+        assert "step" in combined.confidence["gps_rejected"]
+        assert combined.method == "motion"
+    actual = [r.to_dict() for r in match_videos(track, paths, source="npz")]
+    for result, expected in zip(actual, baseline):
+        assert result["shot"]["status"] == "ambiguous"
+        assert ("contradicts" if contradiction == "strong_fit" else "GPS UTC step") in result["shot"]["reason"]
+        result.pop("shot")
+        expected.pop("shot")
+        assert result == expected
 
 
 def test_verification_frames(flight, tmp_path):

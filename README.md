@@ -29,15 +29,21 @@ Match one or more recordings against one flight track:
 gps-video-sync sync takeoff.MP4 ridge.MP4 landing.MP4 --track flight.igc --json sync.json
 ```
 
-Each file is an independent recording. The tool matches each file against the
-track with no data from the other files. The recordings can have gaps between
-them, can overlap in time, and can come from different cameras. You can give
-them in any order. Adding, removing, or reordering the other files does not
-change the result for a file.
+Recordings can have gaps, overlap, or come from different cameras. You can
+give them in any order. Unrelated recordings keep their independent results.
 
-The tool does not join split files. A GoPro splits a long recording into
-chapter files, for example `GX010042.MP4` and `GX020042.MP4`. Each chapter file
-gets its own result, offset, and timeline that starts at zero.
+The tool detects continuous chapters from sensor-clock junctions and exact
+cumulative sample counters inside the files. Names do not establish continuity.
+Confirmed chapters share one alignment, so a short chapter can use motion or
+GPS evidence from its neighbours. Each chapter keeps its own result and local
+timeline. Adjacent chapter boundaries are exactly equal, including clock drift.
+A subset of a continuous recording can give a different alignment.
+
+The tool first matches each file independently. A branch, a failed group solve,
+a new GPS time step, or a contradiction with an accepted independent mapping
+keeps the independent results. Missing continuity evidence also keeps files
+independent. Each result has a `shot` object with `single`, `joined`, or
+`ambiguous` status. Only `joined` means that a shared alignment was applied.
 
 The output uses schema `2.0.0` with a `videos` list, even for one input. The
 list has one entry per input, in input order. Each entry has its own status,
@@ -76,8 +82,8 @@ Exit codes for `sync` and `verify`:
 
 Results, `info` output, telemetry exports, and cache files contain absolute
 recording paths. Paths can show user names and directory names. Exports and
-cache files can also contain camera GPS times, and results contain recording
-dates and times. Remove this data before you share these files.
+cache files can also contain camera GPS times and serial numbers. Results
+contain recording dates and times. Remove this data before you share these files.
 
 ## Use the Python API
 
@@ -93,13 +99,15 @@ telemetry = read_video("ridge.MP4", hz=10)
 result = synchronize(track, telemetry)
 ```
 
-`match_videos` matches each path independently and returns the results in input
-order. A file error gives a `failed` result for that file only. `read_video`
-reads one recording. `synchronize` also accepts array-based `Telemetry`.
+`match_videos` returns one result per input, in input order. It applies shared
+alignment only to confirmed continuous chapters. A file error gives a `failed`
+result for that file only. `read_video` reads one recording. `synchronize`
+matches one recording and also accepts array-based `Telemetry`.
 
 To match exported telemetry, use `source="npz"` in the API or `--source npz` in
 the CLI. NPZ exports from `telemetry --out` keep the original recording
-identity, duration, and media offset. In a batch result, `input_file`
+identity, duration, media offset, and optional continuity evidence.
+`Telemetry.slice` clears continuity evidence. In a batch result, `input_file`
 identifies the NPZ archive.
 
 The result maps video seconds to UTC seconds from midnight of the track date:
@@ -173,10 +181,10 @@ Lower `--hz` if the recording duration in seconds multiplied by `--hz` exceeds
 this limit.
 
 Motion matching needs at least 90 seconds of usable overlap. The overlap must
-also cover at least 65% of the shorter feature sequence. Each file needs enough
-varying motion. Repeated turns, data gaps, or low motion can produce ambiguous
-or false matches. Check the plot and distinctive events before you use an
-alignment. Short clips cannot establish clock stability.
+also cover at least 65% of the shorter feature sequence. Each independent file
+or confirmed continuous group needs enough varying motion. Repeated turns,
+data gaps, or low motion can produce ambiguous or false matches. Check the plot
+and distinctive events before you use an alignment. Short clips cannot establish clock stability.
 
 See the [API and format reference](https://github.com/manuelseeger/gps-video-sync/blob/main/docs/reference.md)
 for data contracts, plugins, telemetry formats, and matching limits.
@@ -187,6 +195,7 @@ for data contracts, plugins, telemetry formats, and matching limits.
 pip install -e '.[dev,verify]'
 python -m pytest
 python scripts/check_independent_videos.py
+python scripts/check_continuous_videos.py
 ```
 
 Run the tests from a repository checkout. Release archives exclude tests and
@@ -198,12 +207,16 @@ contain flight coordinates, times, and media.
 - Frame tests need `ffmpeg` and Matplotlib.
 - To skip integration tests, run `python -m pytest -m 'not integration'`.
 
-`scripts/check_independent_videos.py` needs the `verify` extra and `ffmpeg`. It
-runs the API and the CLI on the bundled recordings. It checks that each
-per-file result stays the same across input orders and subsets, cold and warm
-caches, and NPZ exports. It also checks plots and compares extracted frames
-with direct FFmpeg seeks. Cropped motion recordings and synthetic GPS
-recordings test gaps, overlaps, and failures in a mixed batch.
+`scripts/check_continuous_videos.py` needs the `verify` extra and `ffmpeg`.
+It runs the API and the CLI on the bundled recordings with cold and warm
+caches. It checks exact boundaries, reordered inputs, subsets, weak chapters,
+non-unit drift, gaps, overlaps, counters, contradictory fits, and failures.
+It also checks cache rebuilds, NPZ and JSON exports, crops, saved-result
+selection, plots, and frames against direct FFmpeg seeks.
+
+`scripts/check_independent_videos.py` checks independent motion crops and GPS
+recordings with gaps, overlaps, shuffled inputs, and isolated failures. It also
+checks exports and file-local frame extraction on the bundled videos.
 
 ## License
 

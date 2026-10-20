@@ -13,10 +13,11 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 @pytest.mark.integration
-@pytest.mark.parametrize("script", ["smoke_installed.py", "check_independent_videos.py"])
+@pytest.mark.parametrize("script", ["smoke_installed.py", "check_independent_videos.py",
+                                  "check_continuous_videos.py"])
 def test_verification_script_accepts_symlinked_tmpdir(tmp_path, script):
     pytest.importorskip("matplotlib")
-    if script == "check_independent_videos.py" and shutil.which("ffmpeg") is None:
+    if script != "smoke_installed.py" and shutil.which("ffmpeg") is None:
         pytest.skip("ffmpeg is required")
     real = tmp_path / "real"
     real.mkdir()
@@ -43,6 +44,7 @@ def test_verification_script_accepts_symlinked_tmpdir(tmp_path, script):
     process = subprocess.run([sys.executable, str(ROOT / "scripts" / script)],
                              cwd=tmp_path, env=env, capture_output=True, text=True)
     assert process.returncode == 0, process.stdout + process.stderr
-    expected = ("Installed API and CLI smoke tests passed" if script == "smoke_installed.py"
-                else "Independent videos verified")
+    expected = {"smoke_installed.py": "Installed API and CLI smoke tests passed",
+                "check_independent_videos.py": "Independent videos verified",
+                "check_continuous_videos.py": "Continuous videos verified"}[script]
     assert expected in process.stdout

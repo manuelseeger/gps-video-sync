@@ -1,3 +1,4 @@
+from dataclasses import asdict
 from datetime import date, datetime, timezone
 from itertools import permutations
 import json
@@ -86,11 +87,13 @@ def main():
             assert result["status"] == "ok" and result["method"] == "motion"
             assert abs(result["offset_seconds"] - offset) < 2
         print("Real recording offsets " + ", ".join(str(r["offset_seconds"]) for r in baseline.values()))
+        independent = {str(p): match_videos(track, [p], cache_dir=work / "baseline")[0].to_dict()
+                       for p in paths}
         orders = [paths, paths[::-1], paths[:1], paths[1:]]
         for mode in ("cold", "warm"):
             for index, order in enumerate(orders):
                 cache = work / (f"cold-{index}" if mode == "cold" else "shared")
-                expected = [baseline[str(p)] for p in order]
+                expected = [(baseline if len(order) > 1 else independent)[str(p)] for p in order]
                 assert [r.to_dict() for r in match_videos(track, order, cache_dir=cache)] == expected
                 document = cli("sync", order, "--track", FIXTURES / "flight.igc", "--cache-dir", cache)
                 assert document == dict(schema_version="2.0.0", videos=expected)
@@ -109,11 +112,13 @@ def main():
             equal_arrays(exported, telemetry)
             assert synchronize(track, exported).to_dict() == synchronize(track, telemetry).to_dict()
             batch = match_videos(track, [archive], source="npz")[0].to_dict()
-            assert batch == dict(baseline[str(path)], input_file=str(archive))
+            assert batch == dict(independent[str(path)], input_file=str(archive))
             cli("telemetry", [archive], "--source", "npz", "--out", exported_json)
             document = json.loads(exported_json.read_text())
             assert document["schema_version"] == "2.0.0"
-            assert document["recording"] == dict(video=str(path), duration=telemetry.duration, media_offset_seconds=0.)
+            assert document["recording"] == dict(video=str(path), duration=telemetry.duration,
+                                                  media_offset_seconds=0.,
+                                                  clock=json.loads(json.dumps(asdict(telemetry.clock))))
             assert document["time"] == telemetry.time.tolist()
             for key, values in telemetry.channels.items():
                 assert document["channels"][key] == np.where(np.isfinite(values), values, None).tolist()

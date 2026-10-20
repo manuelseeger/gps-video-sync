@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import asdict
 import json
 from pathlib import Path
 import subprocess
@@ -34,6 +35,8 @@ def _export(telemetry, path):
     validate_telemetry(telemetry)
     recording = dict(video=telemetry.video, duration=telemetry.duration,
                      media_offset_seconds=telemetry.media_offset_seconds)
+    if telemetry.clock is not None:
+        recording["clock"] = asdict(telemetry.clock)
     if Path(path).suffix.lower() == ".npz":
         reserved = {"time", "gps_time", "gps_utc", "recording", "chapters", "schema_version"}
         if reserved.intersection(telemetry.channels):

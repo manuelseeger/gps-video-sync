@@ -428,3 +428,99 @@ def test_single_path_boundary_and_missing_video(tmp_path):
     path.write_bytes(build([Track()]))
     with pytest.raises(ValueError, match="no video"):
         GoProSource().read(path, cache_dir=tmp_path / "cache")
+
+
+def clock_packets(*, defect=None, base=100, stamp_origin=5_000_000):
+    payloads = []
+    total = base
+    for i, count in enumerate((2, 3, 1)):
+        total += count
+        stamp = stamp_origin + i * 1_000_000
+        if defect == "backward_stamp" and i == 2:
+            stamp = 5_000_000
+        if defect == "clock_wander" and i == 2:
+            stamp += 50_000
+        if defect == "reset" and i == 2:
+            total = 1
+        if defect == "increment" and i == 2:
+            total += 1
+        fields = [numeric("ACCL", [[0, 0, 10]] * count),
+                  numeric("STMP", [stamp], "J"), numeric("TSMP", [total], "J")]
+        if defect == "missing_counter" and i == 1:
+            fields.pop()
+        if defect == "missing_stamp" and i == 1:
+            fields.pop(1)
+        if defect == "unsupported_stamp" and i == 1:
+            fields[1] = record("STMP", "c", 1, 3, b"bad")
+        if defect == "unsupported_counter" and i == 1:
+            fields[2] = numeric("TSMP", [float(total)], "d")
+        if defect == "fractional_counter" and i == 1:
+            fields[2] = numeric("TSMP", [total + .5], "f")
+        serial = (b"other" if defect == "serial_conflict" and i == 1 else b"camera")
+        if defect == "serial_encoding" and i == 1:
+            serial = b"\xff"
+        content = record("CASN", "c", 1, len(serial), serial) + stream(*fields)
+        payloads.append(record("DEVC", "\0", 1, len(content), content))
+    return payloads
+
+
+@pytest.mark.parametrize("gap_us,expected", [(0, [(0, 1)]), (60_000, [(0,), (1,)])])
+def test_native_clock_junction_rejects_a_gap_despite_continuous_counters(tmp_path, gap_us, expected):
+    from gps_video_sync.shots import find_shots
+
+    first = video(tmp_path, "first.mp4", clock_packets(), duration=3)
+    second = video(tmp_path, "second.mp4",
+                   clock_packets(base=106, stamp_origin=8_000_000 + gap_us), duration=3)
+    recordings = [GoProSource().read(p, cache_dir=tmp_path / "cache") for p in (first, second)]
+    assert recordings[0].clock.sample_counters == {"ACCL": (100, 106)}
+    assert recordings[1].clock.sample_counters == {"ACCL": (106, 112)}
+    assert [s.members for s in find_shots(recordings)] == expected
+
+
+def test_recording_clock_exact_integer_counters_and_device_serial(tmp_path):
+    base = 2**53 + 1
+    path = video(tmp_path, "clock.mp4", clock_packets(base=base), duration=3)
+    result = GoProSource().read(path, cache_dir=tmp_path / "cache")
+    assert result.clock.origin_seconds == 5.
+    assert result.clock.reach_seconds == .002
+    assert result.clock.sample_counters == {"ACCL": (base, base + 6)}
+    assert result.clock.camera == "camera"
+    assert len(result.time) == 30
+    np.testing.assert_array_equal(result.channels["ACCL"][:3], [[0, 0, 10]] * 3)
+
+
+@pytest.mark.parametrize("defect", ["missing_counter", "missing_stamp", "unsupported_stamp",
+                                    "unsupported_counter", "fractional_counter", "backward_stamp",
+                                    "clock_wander", "reset", "increment", "serial_conflict", "serial_encoding"])
+def test_optional_clock_damage_keeps_motion_usable(tmp_path, defect):
+    path = video(tmp_path, "clock.mp4", clock_packets(defect=defect), duration=3)
+    result = GoProSource().read(path, cache_dir=tmp_path / "cache")
+    assert result.clock is None
+    assert len(result.time) == 30
+    np.testing.assert_array_equal(result.channels["ACCL"][:3], [[0, 0, 10]] * 3)
+
+
+@pytest.mark.parametrize("damage", ["old_version", "missing_clock", "malformed_clock"])
+def test_cache_rebuild_populates_recording_clock(tmp_path, monkeypatch, damage):
+    path = video(tmp_path, "clock.mp4", clock_packets(), duration=3)
+    cache = tmp_path / "cache"
+    original = GoProSource().read(path, cache_dir=cache)
+    saved_path = next(cache.glob("*.npz"))
+    with np.load(saved_path, allow_pickle=False) as saved:
+        content = dict(saved)
+    metadata = json.loads(str(content["metadata"].item()))
+    if damage == "old_version":
+        metadata["version"] = "2.0.0"
+    elif damage == "missing_clock":
+        metadata.pop("clock")
+    else:
+        metadata["clock"] = {"origin_seconds": "bad"}
+    content["metadata"] = np.array(json.dumps(metadata))
+    np.savez_compressed(saved_path, **content)
+    rebuilt = GoProSource().read(path, cache_dir=cache)
+    assert rebuilt.clock == original.clock
+    assert rebuilt.clock.sample_counters == {"ACCL": (100, 106)}
+    monkeypatch.setattr(gopro, "_recording", lambda *a: pytest.fail("warm read re-extracted video"))
+    warm = GoProSource().read(path, cache_dir=cache)
+    assert warm.clock == original.clock
+    np.testing.assert_array_equal(warm.channels["ACCL"], original.channels["ACCL"])
