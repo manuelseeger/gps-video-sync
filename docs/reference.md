@@ -392,12 +392,13 @@ An ambiguous batch result has a `session` object with `verdict`, `reason`, and
 `message`. The verdict types have different meanings:
 
 - `insufficient` means that the evidence cannot constrain placement. Reasons
-  are `no_camera_start`, `too_few_anchors`, `loose_bound`, `gps_step`, or
-  `continuity_conflict`. For example, `too_few_anchors` reports
+  are `no_camera_start`, `too_few_anchors`, or `loose_bound`.
+  For example, `too_few_anchors` reports
   "Fewer than two accepted recordings from this camera".
 - `contradictory` means that the timing evidence conflicts. Reasons are
-  `anchors_disagree`, `recordings_overlap`, or `chapter_creation`. It also
-  names the affected `recordings`. For example, `anchors_disagree` reports
+  `anchors_disagree`, `recordings_overlap`, `chapter_creation`, `gps_step`, or
+  `continuity_conflict`. Each reason names the affected `recordings`.
+  For example, `anchors_disagree` reports
   "Accepted recordings disagree on the camera clock offset".
 
 Both verdicts keep status `ambiguous` and provide no offset. The top-level
