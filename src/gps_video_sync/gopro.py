@@ -17,12 +17,12 @@ from scipy.ndimage import uniform_filter1d
 
 from . import mp4
 from .gpmf import number, records, scaled, streams, MAX_DEPTH
-from .models import Telemetry, RecordingClock
+from .models import CameraStart, Telemetry, RecordingClock
 from .sync import validate_telemetry
 
 KEYS = ("ACCL", "GYRO", "GRAV", "CORI", "IORI")
 QUATERNIONS = ("CORI", "IORI")
-CACHE_VERSION = "3.0.0"
+CACHE_VERSION = "4.0.0"
 MAX_GRID_SAMPLES = 1_000_000
 GPS_EPOCH = datetime(2000, 1, 1, tzinfo=timezone.utc).timestamp()
 
@@ -66,6 +66,13 @@ class Recording:
     motion: dict
     gps: list
     clock: RecordingClock | None = None
+    created_seconds: int | None = None
+
+
+def _camera_start(created_seconds: int | None, clock: RecordingClock | None) -> CameraStart | None:
+    if created_seconds is None or clock is None:
+        return None
+    return CameraStart(created_seconds + clock.origin_seconds, 1. + clock.reach_seconds, clock.camera)
 
 
 def _counter(record) -> int:
@@ -182,7 +189,8 @@ def _recording(path: Path) -> Recording:
             else:
                 gps5.extend(packet_gps5)
     return Recording(duration, len(timeline.samples), data, gps5 + gps9,
-                     _clock(observations, duration, cameras) if serial_valid else None)
+                     _clock(observations, duration, cameras) if serial_valid else None,
+                     timeline.created_seconds)
 
 
 def _resample(blocks: list, grid: np.ndarray, key: str, hz: float) -> np.ndarray | None:
@@ -249,17 +257,21 @@ def _load_cache(path: Path, hz: float) -> Telemetry | None:
                    for k, v in result.channels.items()):
                 return None
             validate_telemetry(result)
-            if "clock" not in meta:
+            if "clock" not in meta or "created_seconds" not in meta:
                 return None
             result.clock = RecordingClock.from_dict(meta["clock"])
             if meta["clock"] is not None and result.clock is None:
                 return None
+            created = meta["created_seconds"]
+            if created is not None and (type(created) is not int or created <= 0):
+                return None
+            result.camera_start = _camera_start(created, result.clock)
             return result
     except (OSError, ValueError, KeyError, TypeError, EOFError, zipfile.BadZipFile):
         return None
 
 
-def _save_cache(path: Path, result: Telemetry) -> None:
+def _save_cache(path: Path, result: Telemetry, created_seconds: int | None) -> None:
     temporary = None
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -267,7 +279,8 @@ def _save_cache(path: Path, result: Telemetry) -> None:
             temporary = handle.name
             metadata = {"version": CACHE_VERSION, "channels": list(result.channels),
                         "video": result.video, "duration": result.duration,
-                        "clock": asdict(result.clock) if result.clock is not None else None}
+                        "clock": asdict(result.clock) if result.clock is not None else None,
+                        "created_seconds": created_seconds}
             np.savez_compressed(handle, metadata=json.dumps(metadata), time=result.time,
                                 gps_time=result.gps_time, gps_utc=result.gps_utc, **result.channels)
         os.replace(temporary, path)
@@ -316,6 +329,6 @@ class GoProSource:
         else:
             gps_time, gps_utc = np.empty(0), np.empty(0)
         result = Telemetry(grid, channels, str(path), local.duration, gps_time, gps_utc,
-                           clock=local.clock)
-        _save_cache(cache, result)
+                           clock=local.clock, camera_start=_camera_start(local.created_seconds, local.clock))
+        _save_cache(cache, result, local.created_seconds)
         return result

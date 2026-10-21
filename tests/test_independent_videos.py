@@ -201,7 +201,7 @@ def test_duplicate_inputs_keep_first_timeline_selectable(local_timelines, tmp_pa
     assert failed.status == "failed" and "duplicate" in failed.message.lower()
     assert failed.video == failed.input_file == str(second.resolve())
     assert failed.media_offset_seconds is None and failed.duration is None
-    document = dict(schema_version="2.0.0", videos=[r.to_dict() for r in results])
+    document = dict(schema_version="3.0.0", videos=[r.to_dict() for r in results])
     assert select_result(document, read_video(first, source="npz")) == results[0].to_dict()
     assert select_result(document, read_video(peer, source="npz")) == results[2].to_dict()
     igc = tmp_path / "flight.igc"
@@ -241,7 +241,7 @@ def test_failed_outcome_does_not_reserve_timeline(local_timelines, tmp_path):
     results = match_videos(track, [first, second], source="npz")
     assert [r.status for r in results] == ["failed", "ok"]
     assert results[1].offset_seconds == 100
-    document = dict(schema_version="2.0.0", videos=[r.to_dict() for r in results])
+    document = dict(schema_version="3.0.0", videos=[r.to_dict() for r in results])
     loaded = read_video(second, source="npz")
     assert select_result(document, loaded) == results[1].to_dict()
     for index in (0, 1):
@@ -330,7 +330,12 @@ def test_sync_result_retains_local_timeline(local_timelines, tmp_path, case, sta
     archive = tmp_path / "timeline.npz"
     _export(telemetry, archive)
     batch = match_videos(track, [archive], source="npz")[0]
-    assert batch.to_dict() == dict(result.to_dict(), input_file=str(archive))
+    expected = dict(result.to_dict(), input_file=str(archive))
+    if status == "ambiguous":
+        expected.update(session={"verdict": "insufficient", "reason": "no_camera_start",
+                                 "message": "No camera start time and recording clock"},
+                        message=result.message + ". No camera start time and recording clock")
+    assert batch.to_dict() == expected
 
 
 @pytest.mark.parametrize("bounds", [(0, 120), (40, 120), (20, 110)])
@@ -353,14 +358,14 @@ def test_saved_results_distinguish_crops_of_one_recording(local_timelines, tmp_p
     for path, bounds in zip(paths, [(20, 100), (40, 120), (20, 110)]):
         _export(telemetry.slice(*bounds), path)
     results = match_videos(track, paths, source="npz")
-    document = dict(schema_version="2.0.0", videos=[r.to_dict() for r in results])
+    document = dict(schema_version="3.0.0", videos=[r.to_dict() for r in results])
     assert [r.offset_seconds for r in results] == [120, 140, 120]
     for path, offset, duration in zip(paths, [120, 140, 120], [80, 80, 90]):
         entry = select_result(document, read_video(path, source="npz"))
         assert entry["offset_seconds"] == offset
         assert entry["duration"] == duration
     with pytest.raises(ValueError, match="unique"):
-        select_result(dict(schema_version="2.0.0", videos=[document["videos"][0]] * 2),
+        select_result(dict(schema_version="3.0.0", videos=[document["videos"][0]] * 2),
                       read_video(paths[0], source="npz"))
 
 
@@ -391,20 +396,20 @@ def test_cli_verify_saved_result_requires_current_timeline(local_timelines, tmp_
 def test_saved_result_selection_and_invalid_entries(recordings):
     track, paths = recordings
     entries = [r.to_dict() for r in match_videos(track, paths, source="npz")]
-    document = dict(schema_version="2.0.0", videos=entries)
+    document = dict(schema_version="3.0.0", videos=entries)
     assert select_result(document, read_video(paths[1], source="npz")) == entries[1]
     with pytest.raises(ValueError, match="no unique"):
         select_result(document, Telemetry(np.empty(0), {}, "other.mp4"))
     for videos in ([], [entries[0], entries[0]], [None], [{"video": "x"}],
                    [dict(entries[0], status="unknown")], [dict(entries[0], offset_seconds="bad")]):
         with pytest.raises(ValueError):
-            select_result(dict(schema_version="2.0.0", videos=videos), read_video(paths[0], source="npz"))
+            select_result(dict(schema_version="3.0.0", videos=videos), read_video(paths[0], source="npz"))
 
 
 def test_saved_result_ignores_unrelated_duplicate_timelines(recordings):
     track, paths = recordings
     entries = [r.to_dict() for r in match_videos(track, paths[:2], source="npz")]
-    document = dict(schema_version="2.0.0", videos=[entries[0], entries[0], entries[1]])
+    document = dict(schema_version="3.0.0", videos=[entries[0], entries[0], entries[1]])
     assert select_result(document, read_video(paths[1], source="npz")) == entries[1]
     with pytest.raises(ValueError, match="no unique"):
         select_result(document, read_video(paths[0], source="npz"))
@@ -418,7 +423,7 @@ def test_saved_result_ignores_unrelated_duplicate_timelines(recordings):
 def test_saved_result_validates_unrelated_entries(recordings, changes):
     track, paths = recordings
     entries = [r.to_dict() for r in match_videos(track, paths[:2], source="npz")]
-    document = dict(schema_version="2.0.0", videos=[dict(entries[0], **changes), entries[1]])
+    document = dict(schema_version="3.0.0", videos=[dict(entries[0], **changes), entries[1]])
     with pytest.raises(ValueError):
         select_result(document, read_video(paths[1], source="npz"))
 
@@ -433,7 +438,7 @@ def test_saved_result_rejects_invalid_timeline(local_timelines, changes):
     track, telemetry = local_timelines
     entry = dict(synchronize(track, telemetry).to_dict(), **changes)
     with pytest.raises(ValueError):
-        select_result(dict(schema_version="2.0.0", videos=[entry]), telemetry)
+        select_result(dict(schema_version="3.0.0", videos=[entry]), telemetry)
 
 
 @pytest.mark.parametrize("field", ["media_offset_seconds", "duration"])
@@ -442,7 +447,7 @@ def test_saved_result_requires_timeline_metadata(local_timelines, tmp_path, fiel
     entry = synchronize(track, telemetry).to_dict()
     del entry[field]
     with pytest.raises(ValueError, match="timeline metadata"):
-        select_result(dict(schema_version="2.0.0", videos=[entry]), telemetry)
+        select_result(dict(schema_version="3.0.0", videos=[entry]), telemetry)
     with pytest.raises(ValueError, match="timeline metadata"):
         plot_verification(track, telemetry, entry, tmp_path / "plot.png")
 
@@ -468,8 +473,8 @@ def test_frame_seeks_use_current_recording_not_saved_input(tmp_path, monkeypatch
     video.touch()
     telemetry = Telemetry(np.arange(10.), {}, str(video), 10).slice(3, 8)
     track = Track(np.arange(10.), np.zeros(10), np.zeros(10), np.zeros(10))
-    from gps_video_sync import SyncResult
-    result = SyncResult("ok", 0, video=str(video), input_file="untrusted.mp4",
+    from gps_video_sync.models import SyncResult, Accepted, TimeMapping, OwnGps
+    result = SyncResult(Accepted(TimeMapping(0, .5, 1., OwnGps())), video=str(video), input_file="untrusted.mp4",
                         media_offset_seconds=3, duration=5).to_dict()
     calls = []
     def run(command, **kwargs):
@@ -517,7 +522,7 @@ def test_saved_result_rejects_malformed_status(recordings, status):
     entry = match_videos(track, paths[:1], source="npz")[0].to_dict()
     entry["status"] = status
     with pytest.raises(ValueError, match="status"):
-        select_result(dict(schema_version="2.0.0", videos=[entry]), read_video(paths[0], source="npz"))
+        select_result(dict(schema_version="3.0.0", videos=[entry]), read_video(paths[0], source="npz"))
 
 
 def test_invalid_path_isolated_from_valid_peer(recordings):

@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 
 from gps_video_sync import cli
-from gps_video_sync.models import SyncResult, Telemetry, Track
+from gps_video_sync.models import SyncResult, Telemetry, Track, Accepted, Ambiguous, TimeMapping, OwnMotion
 from gps_video_sync.verify import _recording_frame
 
 
@@ -24,9 +24,11 @@ def fake_matcher(monkeypatch, status="ok"):
     monkeypatch.setattr(cli, "read_track", lambda *a, **kw: Track(
         np.arange(8), np.zeros(8), np.zeros(8), np.arange(8)))
     def match(track, telemetry):
-        return SyncResult(status=status, offset_seconds=3600, video=telemetry.video,
+        outcome = (Accepted(TimeMapping(3600, 2, 1, OwnMotion())) if status == "ok"
+                   else Ambiguous("test result"))
+        return SyncResult(outcome, video=telemetry.video,
                           media_offset_seconds=telemetry.media_offset_seconds,
-                          duration=telemetry.duration, message="test result")
+                          duration=telemetry.duration)
     monkeypatch.setattr(cli, "synchronize", match)
     monkeypatch.setattr(cli, "match_videos", lambda track, paths, **kw: [
         match(track, cli.read_video(p, source="npz")) for p in paths])
@@ -38,7 +40,7 @@ def test_sync_json(sample, tmp_path, monkeypatch):
     assert cli.main(["sync", str(sample), "--source", "npz", "--track", "unused.igc",
                      "--json", str(out)]) == 0
     result = json.loads(out.read_text())
-    assert result["schema_version"] == "2.0.0"
+    assert result["schema_version"] == "3.0.0"
     assert result["videos"][0]["offset_seconds"] == 3600
     assert "clockRate" in result["videos"][0]
 
@@ -196,9 +198,9 @@ def test_missing_ffmpeg_is_clean_error(sample, tmp_path, monkeypatch, capsys):
 
 
 def _ok_result(path, **changes):
-    result = SyncResult("ok", offset_seconds=3600, media_offset_seconds=0).to_dict()
+    result = SyncResult(Accepted(TimeMapping(3600, 2, 1, OwnMotion())), media_offset_seconds=0).to_dict()
     result.update(changes)
-    path.write_text(json.dumps(dict(schema_version="2.0.0", videos=[result])))
+    path.write_text(json.dumps(dict(schema_version="3.0.0", videos=[result])))
     return path
 
 

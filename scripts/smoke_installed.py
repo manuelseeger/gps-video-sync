@@ -45,7 +45,7 @@ with tempfile.TemporaryDirectory() as temporary:
     np.savez(path, time=time, gps_time=time, gps_utc=epoch + 3600 + time)
     output = json.loads(run("gps-video-sync", "sync", str(path), "--source", "npz",
                             "--track", str(igc)))
-    assert output["schema_version"] == "2.0.0" and len(output["videos"]) == 1
+    assert output["schema_version"] == "3.0.0" and len(output["videos"]) == 1
     item = output["videos"][0]
     assert item["status"] == "ok" and abs(item["offset_seconds"] - 3600) < 0.01
     assert item["video"] == str(path) and item["input_file"] == str(path)
@@ -57,7 +57,7 @@ with tempfile.TemporaryDirectory() as temporary:
             "gps-video-sync", "sync", str(fixtures / "chapter-01.mp4"),
             str(fixtures / "chapter-02.mp4"), "--track", str(fixtures / "flight.igc"),
             "--cache-dir", str(root / "cache")))
-        assert media["schema_version"] == "2.0.0" and len(media["videos"]) == 2
+        assert media["schema_version"] == "3.0.0" and len(media["videos"]) == 2
         for item, expected in zip(media["videos"], [36160.112, 36460.112]):
             assert item["status"] == "ok" and item["method"] == "motion"
             assert abs(item["offset_seconds"] - expected) < 2

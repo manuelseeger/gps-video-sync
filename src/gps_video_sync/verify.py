@@ -47,13 +47,13 @@ def _timeline(result):
 
 
 def select_result(document, telemetry):
-    if not isinstance(document, dict) or document.get("schema_version") != "2.0.0":
-        raise ValueError("Expected a schema_version 2.0.0 sync document")
+    if not isinstance(document, dict) or document.get("schema_version") != "3.0.0":
+        raise ValueError("Expected a schema_version 3.0.0 sync document")
     entries = document.get("videos")
     if not isinstance(entries, list) or not entries:
         raise ValueError("Sync document needs a nonempty videos list")
     for entry in entries:
-        if not isinstance(entry, dict) or entry.get("schema_version") != "2.0.0":
+        if not isinstance(entry, dict) or entry.get("schema_version") != "3.0.0":
             raise ValueError("Malformed saved-result entry")
         video = entry.get("video")
         if not isinstance(video, str) or not video:
@@ -116,8 +116,8 @@ def plot_verification(track, telemetry, result, output, frames=()):
         import matplotlib.pyplot as plt
     except ImportError as exc:
         raise RuntimeError("Verification plots require: pip install 'gps-video-sync[verify]'") from exc
-    if not isinstance(result, dict) or result.get("schema_version") != "2.0.0":
-        raise ValueError("Expected a schema_version 2.0.0 sync result")
+    if not isinstance(result, dict) or result.get("schema_version") != "3.0.0":
+        raise ValueError("Expected a schema_version 3.0.0 sync result")
     if result.get("video") != telemetry.video:
         raise ValueError("Result recording identity does not match current telemetry")
     if _timeline(result) != (telemetry.media_offset_seconds, telemetry.duration):

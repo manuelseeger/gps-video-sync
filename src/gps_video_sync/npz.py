@@ -3,7 +3,7 @@ import json
 
 import numpy as np
 
-from .models import Telemetry, RecordingClock
+from .models import CameraStart, Telemetry, RecordingClock
 from .sync import validate_telemetry
 
 
@@ -16,8 +16,8 @@ class NPZSource:
         with data:
             if "chapters" in data:
                 raise ValueError("Legacy concatenated chapter metadata is not supported")
-            if "schema_version" in data and str(data["schema_version"].item()) != "2.0.0":
-                raise ValueError("Expected telemetry schema_version 2.0.0")
+            if "schema_version" in data and str(data["schema_version"].item()) != "3.0.0":
+                raise ValueError("Expected telemetry schema_version 3.0.0")
             if "time" not in data:
                 raise ValueError("NPZ needs a time array")
             time = np.asarray(data["time"], dtype=float)
@@ -26,7 +26,7 @@ class NPZSource:
             metadata = json.loads(str(data["recording"].item())) if "recording" in data else {}
             if not isinstance(metadata, dict):
                 raise ValueError("NPZ recording metadata must be an object")
-            if "recording" in data and set(metadata) - {"clock"} != {"video", "duration", "media_offset_seconds"}:
+            if "recording" in data and set(metadata) - {"clock", "camera_start"} != {"video", "duration", "media_offset_seconds"}:
                 raise ValueError("NPZ recording needs video, duration and media_offset_seconds")
             result = Telemetry(time, channels, metadata.get("video", str(path)),
                                metadata.get("duration"),
@@ -35,5 +35,7 @@ class NPZSource:
                                metadata.get("media_offset_seconds", 0.),
                                RecordingClock.from_dict(metadata.get("clock"))
                                if metadata.get("media_offset_seconds", 0.) == 0 else None)
+            if result.clock is not None:
+                result.camera_start = CameraStart.from_dict(metadata.get("camera_start"))
         validate_telemetry(result)
         return result

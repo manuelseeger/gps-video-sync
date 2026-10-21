@@ -98,7 +98,8 @@ def test_gps_primary_and_date():
 
 def test_result_midnight_timebase():
     from gps_video_sync import SyncResult
-    result = SyncResult("ok", 86410., date=date(2026, 1, 1))
+    from gps_video_sync.models import Accepted, TimeMapping, OwnGps
+    result = SyncResult(Accepted(TimeMapping(86410., .5, 1., OwnGps())), date=date(2026, 1, 1))
     assert result.video_start_utc == "2026-01-02T00:00:10+00:00"
     obj = result.to_dict()
     assert obj["dateUtc"] == "2026-01-02"

@@ -31,6 +31,7 @@ class Sample(NamedTuple):
 class Timeline(NamedTuple):
     duration: float
     samples: tuple[Sample, ...]
+    created_seconds: int | None = None
 
 
 @dataclass(frozen=True)
@@ -333,6 +334,8 @@ def _read(handle, sample_format):
     if len(movies) != 1:
         raise ValueError("expected one mvhd box")
     movie_scale, movie_duration = _clock(movies[0])
+    version = _version(movies[0], (0, 1))
+    created, = _unpack(">Q" if version else ">I", movies[0], 4)
     tracks = [body for kind, body in children if kind == b"trak"]
     if len(tracks) > MAX_TRACKS:
         raise ValueError("track count limit exceeded")
@@ -390,7 +393,7 @@ def _read(handle, sample_format):
                 if time < delay and delay > origin:
                     raise ValueError("unsupported partial sample across empty edit")
             samples.append(Sample(float(time - origin), float(Fraction(delta, track.scale)), pos, size))
-    return Timeline(float(duration), tuple(sorted(samples, key=lambda s: s.time)))
+    return Timeline(float(duration), tuple(sorted(samples, key=lambda s: s.time)), created or None)
 
 
 def read_timeline(path: str | Path, sample_format: str = "gpmd") -> Timeline:

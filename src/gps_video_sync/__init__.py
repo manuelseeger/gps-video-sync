@@ -1,9 +1,9 @@
-from .models import Track, Telemetry, SyncResult, RecordingClock
+from .models import Track, Telemetry, SyncResult, RecordingClock, Failed
 from .plugins import (TrackReader, VideoSource, register_track, register_video,
                       read_track, read_video)
 from .igc import IGCReader
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 register_track("igc", IGCReader())
 from .gopro import GoProSource
 register_video("gopro", GoProSource())
@@ -17,7 +17,7 @@ def synchronize(track: Track, telemetry: Telemetry) -> SyncResult:
 
 def match_videos(track: Track, paths, *, source: str = "gopro", hz: float = 10,
                  cache_dir=None) -> list[SyncResult]:
-    """Match recordings independently, then apply evidence-based continuous shots."""
+    """Match recordings, join continuous chapters, and place camera-session clips."""
     import math
     from pathlib import Path
     import zipfile
@@ -56,7 +56,7 @@ def match_videos(track: Track, paths, *, source: str = "gopro", hz: float = 10,
                 raise ValueError("Duplicate recording timeline")
         except (OSError, ValueError, EOFError, zipfile.BadZipFile) as exc:
             telemetry = None
-            result = SyncResult("failed", video=identity, message=str(exc), date=track.date)
+            result = SyncResult(Failed(str(exc)), video=identity, date=track.date)
         else:
             result = _synchronize(track, telemetry)
             if result.status != "failed":
@@ -65,4 +65,5 @@ def match_videos(track: Track, paths, *, source: str = "gopro", hz: float = 10,
         results.append(result)
         recordings.append(telemetry)
     from .shots import match_shots
-    return match_shots(track, recordings, results)
+    from .session import match_session
+    return match_session(track, recordings, match_shots(track, recordings, results))

@@ -152,7 +152,7 @@ def test_permutations_subsets_api_and_cli(flight, tmp_path):
                                "--cache-dir", str(tmp_path / "cli-cache")], capture_output=True, text=True)
         assert proc.returncode == 0, proc.stderr
         document = json.loads(proc.stdout)
-        assert document["schema_version"] == "2.0.0"
+        assert document["schema_version"] == "3.0.0"
         assert document["videos"] == expected
     assert len(list((tmp_path / "cache").glob("*.npz"))) == 2
     assert len(list((tmp_path / "cli-cache").glob("*.npz"))) == 2

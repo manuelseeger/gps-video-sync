@@ -6,7 +6,8 @@ from typing import Literal, Sequence
 
 import numpy as np
 
-from .models import SyncResult, Telemetry, Track
+from .models import (SyncResult, Telemetry, Track, Accepted, JoinedShot, ShotCandidate,
+                     SessionContradiction)
 
 JOIN_SECONDS = .05
 
@@ -16,11 +17,6 @@ class Shot:
     members: tuple[int, ...]
     status: Literal["single", "joined", "ambiguous"]
     reason: str = ""
-
-    def metadata(self, results: Sequence[SyncResult], index: int, start: float) -> dict:
-        return {"status": self.status,
-                "members": [results[i].input_file for i in self.members],
-                "index": index, "start_seconds": start, "reason": self.reason}
 
 
 def _continuous(a: Telemetry, b: Telemetry) -> bool:
@@ -65,7 +61,9 @@ def find_shots(recordings: Sequence[Telemetry | None]) -> list[Shot]:
                 or len(cameras) > 1):
             reason = "Continuity branches or has conflicting camera serials: " + ", ".join(
                 sorted(recordings[i].video or str(i) for i in component))
-            shots.extend(Shot((i,), "ambiguous", reason) for i in sorted(component))
+            members = tuple(sorted(component, key=lambda i: (
+                recordings[i].clock.origin_seconds, recordings[i].video or "")))
+            shots.append(Shot(members, "ambiguous", reason))
             continue
         root = next(i for i in component if not predecessors[i])
         members = [root]
@@ -95,10 +93,10 @@ def concatenate(members: Sequence[Telemetry]) -> Telemetry:
 
 
 def project(result: SyncResult, members: Sequence[Telemetry]) -> list[SyncResult]:
-    offset, rate = result.offset_seconds, result.drift.get("clock_rate", 1.)
+    offset, rate = result.offset_seconds, result.mapping.clock_rate
     projected = []
     for member in members:
-        projected.append(replace(result, offset_seconds=offset, video=member.video,
+        projected.append(replace(result, outcome=Accepted(replace(result.mapping, offset_seconds=offset)), video=member.video,
                                  media_offset_seconds=member.media_offset_seconds,
                                  duration=member.duration, confidence=deepcopy(result.confidence),
                                  per_feature=deepcopy(result.per_feature), drift=deepcopy(result.drift)))
@@ -116,7 +114,7 @@ def _contradiction(baseline: SyncResult, projected: SyncResult) -> bool:
     day = ((projected.date - baseline.date).days * 86400
            if projected.date is not None and baseline.date is not None else 0.)
     delta = projected.offset_seconds - baseline.offset_seconds + day
-    rate_delta = projected.drift.get("clock_rate", 1.) - baseline.drift.get("clock_rate", 1.)
+    rate_delta = projected.mapping.clock_rate - baseline.mapping.clock_rate
     bound = baseline.uncertainty_seconds + projected.uncertainty_seconds
     return any(abs(delta + rate_delta * end) > bound for end in (0., baseline.duration))
 
@@ -131,9 +129,20 @@ def match_shots(track: Track, recordings: Sequence[Telemetry | None],
             continue
         members = [recordings[i] for i in shot.members]
         reason, projected = shot.reason, None
-        if shot.status == "joined":
+        identities = tuple(baseline[j].input_file for j in shot.members)
+        block = (SessionContradiction("continuity_conflict", identities)
+                 if shot.status == "ambiguous" else None)
+        creations = [m.camera_start.seconds - m.clock.origin_seconds for m in members
+                     if m.camera_start is not None and m.clock is not None]
+        if creations and max(creations) - min(creations) > 1.:
+            block = SessionContradiction("chapter_creation", tuple(sorted(identities)))
+            reason = block.message
+        elif shot.status == "joined":
             if any(baseline[i].status == "failed" for i in shot.members):
                 reason = "A member failed independent synchronization"
+            elif any(_gps_step(baseline[i]) for i in shot.members):
+                reason = "A GPS UTC step blocks shot synchronization"
+                block = SessionContradiction("gps_step", identities)
             else:
                 solved = _synchronize(track, concatenate(members))
                 if solved.status != "ok":
@@ -146,13 +155,17 @@ def match_shots(track: Track, recordings: Sequence[Telemetry | None],
                         reason = "Shot mapping contradicts an accepted independent mapping"
         if reason:
             shot = replace(shot, status="ambiguous", reason=reason)
+            if block is None and any(baseline[i].status in {"ok", "failed"} for i in shot.members):
+                block = SessionContradiction("continuity_conflict", identities)
         start = 0.
         for index, i in enumerate(shot.members):
             result = (replace(projected[index], input_file=baseline[i].input_file)
                       if shot.status == "joined" else replace(baseline[i]))
-            result.shot = shot.metadata(baseline, index, start)
             if shot.status == "joined":
-                result.shot["diagnostics_coordinates"] = "shot"
+                result.outcome = Accepted(replace(result.mapping, source=JoinedShot(
+                    result.method, identities, index, start)))
+            else:
+                result.shot_candidate = ShotCandidate(identities, index, start, shot.reason, block)
             results[i] = result
             start += recordings[i].duration
     return results
