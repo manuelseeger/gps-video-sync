@@ -3,7 +3,7 @@ from .plugins import (TrackReader, VideoSource, register_track, register_video,
                       read_track, read_video)
 from .igc import IGCReader
 
-__version__ = "1.0.0"
+__version__ = "2.0.0"
 register_track("igc", IGCReader())
 from .gopro import GoProSource
 register_video("gopro", GoProSource())
