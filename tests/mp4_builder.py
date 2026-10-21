@@ -52,9 +52,9 @@ def video(**kwargs):
     return Track(handler=b"vide", format=b"avc1", **kwargs)
 
 
-def clock(kind, scale, duration, version=0):
-    body = (struct.pack(">QQIQ", 0, 0, scale, duration) if version
-            else struct.pack(">IIII", 0, 0, scale, duration))
+def clock(kind, scale, duration, version=0, created=0):
+    body = (struct.pack(">QQIQ", created, 0, scale, duration) if version
+            else struct.pack(">IIII", created, 0, scale, duration))
     return full(kind, body + b"\0" * 80, version)
 
 
@@ -104,7 +104,7 @@ def track_box(t, offsets):
     return box(b"trak", edts + mdia)
 
 
-def build(tracks, *, movie_scale=1000, movie_duration=0, version=0,
+def build(tracks, *, movie_scale=1000, movie_duration=0, version=0, created=0,
           moov_first=False, extended=False, to_end=None, extra_top=b"", extra_moov=b"",
           payload_start=None):
     for t in tracks:
@@ -123,7 +123,7 @@ def build(tracks, *, movie_scale=1000, movie_duration=0, version=0,
                 cursor += sum(len(p) for p in data[index:index + n])
                 index += n
             bodies.append(track_box(t, offsets))
-        return box(b"moov", clock(b"mvhd", movie_scale, movie_duration, version) +
+        return box(b"moov", clock(b"mvhd", movie_scale, movie_duration, version, created) +
                    b"".join(bodies) + extra_moov, extended=extended, to_end=to_end == "moov")
 
     start = payload_start if payload_start is not None else header

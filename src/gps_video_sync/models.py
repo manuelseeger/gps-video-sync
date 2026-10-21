@@ -51,6 +51,30 @@ class RecordingClock:
         except (ValueError, TypeError, OverflowError):
             return None
 
+@dataclass(frozen=True)
+class CameraStart:
+    """Camera-clock time at local video zero, not UTC."""
+    seconds: float
+    bound_seconds: float
+    camera: str | None = None
+
+    def __post_init__(self):
+        if any(isinstance(v, bool) or not isinstance(v, Real) or not math.isfinite(v)
+               for v in (self.seconds, self.bound_seconds)) or self.bound_seconds < 0:
+            raise ValueError("Camera start needs finite seconds and a nonnegative bound")
+        if self.camera is not None and (not isinstance(self.camera, str) or not self.camera):
+            raise ValueError("Camera start camera must be a nonempty string")
+
+    @classmethod
+    def from_dict(cls, value) -> CameraStart | None:
+        if not isinstance(value, dict):
+            return None
+        try:
+            return cls(**value)
+        except (ValueError, TypeError, OverflowError):
+            return None
+
+
 @dataclass
 class Telemetry:
     time: np.ndarray
@@ -62,6 +86,7 @@ class Telemetry:
 
     media_offset_seconds: float = 0.
     clock: RecordingClock | None = None
+    camera_start: CameraStart | None = None
 
     def slice(self, start: float, end: float) -> Telemetry:
         if not np.isfinite(start) or not np.isfinite(end) or start < 0 or end <= start:
