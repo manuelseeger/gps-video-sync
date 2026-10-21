@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 from dataclasses import asdict
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -81,6 +82,8 @@ def _parser():
             sub.add_argument("--altitude", choices=("auto", "gps", "pressure"), default="auto")
         if command == "sync":
             sub.add_argument("--json", type=Path, help="write result here instead of stdout")
+            sub.add_argument("--in-place", action="store_true", help="store accepted UTC starts in MP4 creation dates")
+            sub.add_argument("--dry-run", action="store_true", help="preview --in-place without changing files")
         elif command == "telemetry":
             sub.add_argument("--out", required=True, type=Path)
         elif command == "verify":
@@ -93,6 +96,22 @@ def _parser():
 def main(argv=None):
     args = _parser().parse_args(argv)
     try:
+        if args.command == "sync":
+            if args.dry_run and not args.in_place:
+                raise ValueError("--dry-run requires --in-place")
+            if args.in_place:
+                from .in_place import validate_input
+                if args.source != "gopro":
+                    raise ValueError("--in-place requires the gopro source and direct local MP4 inputs")
+                if args.json:
+                    if (not args.json.parent.is_dir() or not os.access(args.json.parent, os.W_OK)
+                            or (args.json.exists() and (not args.json.is_file()
+                                                       or not os.access(args.json, os.W_OK)))):
+                        raise ValueError("--json requires a writable file destination in an existing directory")
+                for video in args.videos:
+                    path, _ = validate_input(video)
+                    if args.json and args.json.exists() and args.json.samefile(path):
+                        raise ValueError("--json must not overwrite an input video")
         if args.command in {"telemetry", "info"}:
             telemetry = _telemetry(args)
             if args.command == "telemetry":
@@ -114,11 +133,23 @@ def main(argv=None):
                 raise ValueError(f"Unknown track format: {args.track_format}") from exc
             raise
         if args.command == "sync":
-            results = [r.to_dict() for r in match_videos(
-                track, args.videos, source=args.source, hz=args.hz, cache_dir=args.cache_dir)]
+            alignments = list(match_videos(
+                track, args.videos, source=args.source, hz=args.hz, cache_dir=args.cache_dir))
+            results = []
+            for alignment in alignments:
+                result = alignment.to_dict()
+                if args.in_place:
+                    from .in_place import apply_alignment
+                    result["in_place"] = asdict(apply_alignment(alignment, dry_run=args.dry_run))
+                results.append(result)
             document = dict(schema_version="3.0.0", videos=results)
             if args.json:
-                write_json(args.json, document)
+                try:
+                    write_json(args.json, document)
+                except OSError:
+                    if args.in_place:
+                        print(json.dumps(document, indent=2, default=_json_default, allow_nan=False))
+                    raise
             else:
                 print(json.dumps(document, indent=2, default=_json_default, allow_nan=False))
         else:
@@ -133,7 +164,11 @@ def main(argv=None):
             if result["status"] != "ok":
                 print(f"{result.get('input_file') or result.get('video')}: {result['status']}: "
                       + (result.get("message") or "No unique alignment; inspect confidence."), file=sys.stderr)
-        if any(r["status"] == "failed" for r in results):
+        for result in results:
+            report = result.get("in_place", {})
+            if report.get("state") == "failed":
+                print(f"{report['path']}: in-place failed: {report['message']}", file=sys.stderr)
+        if any(r["status"] == "failed" or r.get("in_place", {}).get("state") == "failed" for r in results):
             return 1
         return 2 if any(r["status"] == "ambiguous" for r in results) else 0
     except (OSError, ValueError, KeyError, RuntimeError, ImportError, EOFError,

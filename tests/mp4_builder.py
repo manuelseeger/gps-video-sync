@@ -101,7 +101,8 @@ def track_box(t, offsets):
     if t.edits is not None:
         rows = [tuple(e) if len(e) == 4 else (*e, 1, 0) for e in t.edits]
         edts = box(b"edts", table(b"elst", rows, ">Qqhh" if t.version else ">Iihh", t.version))
-    return box(b"trak", edts + mdia)
+    tkhd = full(b"tkhd", b"\0" * (92 if t.version else 80), t.version)
+    return box(b"trak", tkhd + edts + mdia)
 
 
 def build(tracks, *, movie_scale=1000, movie_duration=0, version=0, created=0,

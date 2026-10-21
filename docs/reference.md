@@ -282,6 +282,10 @@ GPS9 takes priority. The extractor uses only 3D fixes. File creation dates and
 the STMP sensor clock are not UTC references.
 
 The reader parses `mvhd` creation seconds in version 0 and version 1 headers.
+If the file contains the private creation-time provenance UUID, the reader
+uses its original creation seconds for camera evidence instead. An original
+zero remains unknown, even after a UTC date update. Invalid or duplicate
+provenance causes an extraction error.
 Zero means missing. With a validated recording clock, GoPro extraction builds
 `CameraStart` as creation seconds plus `RecordingClock.origin_seconds`.
 Its bound is 1 second for creation-time quantization plus the recording-clock
@@ -365,6 +369,70 @@ Invalid command-line arguments give exit code 1 and a usage message.
 `duration`, `samples`, `start_seconds`, `end_seconds`, `channels` with array
 shapes, and `gps_samples`.
 `telemetry --out` accepts a path that ends in `.npz` or `.json`.
+
+### In-place UTC dates
+
+`sync --in-place` stores accepted video-zero UTC dates in direct local MP4
+inputs. It supports the `gopro` source only. NPZ inputs, other sources,
+symlinks, hard-linked files, read-only files, and nonregular files are rejected
+before matching. An invalid `--json` destination is also rejected before matching.
+`--dry-run` requires `--in-place` and validates each planned update without
+changing video bytes. Default `sync` leaves video bytes unchanged.
+
+The command matches the whole batch before writing any file. Each accepted
+alignment supplies midnight on `utc_origin_date` plus `offset_seconds` at
+video zero. Negative offsets and midnight rollover change the date as needed.
+Creation dates round to the nearest whole second. Exact half seconds round
+toward the later second. `clockRate` stays in the alignment diagnostics and
+does not change playback speed.
+
+The native writer changes only creation-time fields in `mvhd`, every `tkhd`,
+and every `mdhd`. All MP4 modification-time fields remain unchanged. Timescales,
+durations, sample tables, offsets, edit lists, and media payloads remain
+unchanged. The writer supports header versions 0 and 1 and rejects fragmented
+files, malformed boxes, duplicate headers, and unsupported versions. It rejects
+dates outside a header's unsigned timestamp range instead of growing the
+header. In particular, version 0 ends at 2040-02-06T06:28:15Z.
+
+On the first date change, the writer appends one 33-byte top-level `uuid` box.
+Its user type is `d3f1a7f4-b6c8-4ad5-a89e-204803be71a2`. The nine-byte payload
+contains version byte `1` and the original `mvhd` creation seconds as a
+big-endian unsigned 64-bit integer relative to 1904-01-01T00:00:00Z. The value
+can be zero. Subsequent updates retain this record. Unknown versions, invalid
+lengths, or duplicate provenance records cause an error. A top-level size-zero
+box prevents the first update because appending would change its extent.
+
+Each file is an independent transaction. The writer copies to a temporary
+sibling, patches fixed-width fields, and verifies the staged headers, original
+camera date, and timeline. It preserves permissions, fsyncs the copy, checks the
+source stat, atomically replaces the source, and fsyncs the directory. It removes
+staging files on failure and creates no backup. A directory sync failure is
+reported after replacement, so the updated file can already be present. Files already at the requested
+date are not rewritten. Changed file size and filesystem modification time
+invalidate the existing telemetry cache key. The preserved original creation
+date keeps cold extraction's camera evidence unchanged.
+
+The temporary copy needs free disk space equal to the clip size. Replacement
+preserves permission bits but does not preserve ownership, extended attributes,
+ACLs, or filesystem birth time. Do not modify a clip with another program while
+this command runs. A remux tool can remove the private UUID record. Without that
+record, extraction treats the corrected creation date as original camera time.
+
+Each result includes an `in_place` object only when `--in-place` is set.
+Alignment `status` is separate from write `state`. The object contains `path`,
+`utc` as the rounded ISO UTC date or `null`, and `message`. Its `state` is one of:
+
+- `written` means that replacement succeeded.
+- `unchanged` means that all creation fields already contain the requested date.
+- `planned` means that a dry run validated a needed update.
+- `skipped` means that the alignment is ambiguous or failed, so no write was attempted.
+- `failed` means that validation or writing failed.
+
+A write failure gives exit code 1, even when the alignment is `ok`. Other
+results still receive independent write attempts. Ambiguous-only batches keep
+exit code 2. There is no batch rollback. If the JSON destination becomes
+unwritable after the updates, the command prints the report to stdout and exits
+with code 1.
 
 ### Sync results
 
