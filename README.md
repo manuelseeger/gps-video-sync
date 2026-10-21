@@ -1,106 +1,43 @@
 # gps-video-sync
 
-Align action-camera telemetry with an IGC flight track. The tool calculates a
-video-to-UTC offset, checks clock drift, and plots the alignment. It uses camera
-GPS time when available and falls back to motion matching. In a batch, two
-accepted recordings from the same camera can place clips with weak evidence.
+Find each video's clock offset relative to an IGC GPS flight track. The offset
+maps timestamps in the video to UTC times on the track, even when the camera's
+date or time is wrong.
 
-My GoPro clock often has the wrong date or time. I use this tool to align the
-video with the GPS track after recording.
+The tool uses camera GPS time when available and falls back to motion matching.
+It also checks clock drift and can plot the alignment. In a batch, two accepted
+recordings from the same camera can place clips which have otherwise weak evidence.
 
 ## Install
 
 Requires Python 3.10 or later. Tests cover Python 3.10 to 3.15.
 
 ```sh
-pip install gps-video-sync
-pip install "gps-video-sync[verify]"
+uv tool install gps-video-sync
 ```
+or with pip
 
-From a source checkout, run `pip install .` or `pip install ".[verify]"`.
-
-The `verify` extra installs Matplotlib for plots. Frame extraction also needs
-`ffmpeg` on `PATH`. GoPro MP4 and LRV extraction needs no external program.
+```sh
+pip install gps-video-sync
+```
 
 ## Align recordings
 
-Match one or more recordings against one flight track:
+Match your recordings against an IGC flight track and save the results:
 
 ```sh
 gps-video-sync sync takeoff.MP4 ridge.MP4 landing.MP4 --track flight.igc --json sync.json
 ```
 
-Recordings can have gaps, overlap, or come from different cameras. You can
-give them in any order. Session placement keeps accepted results unchanged.
+Use one or more recordings, each listed once. Include all recordings from the
+flight to help align short clips. File order does not matter.
 
-The tool detects continuous chapters from sensor-clock junctions and exact
-cumulative sample counters inside the files. Names do not establish continuity.
-Confirmed chapters share one alignment, so a short chapter can use motion or
-GPS evidence from its neighbours. Each chapter keeps its own result and local
-timeline. Adjacent chapter boundaries are exactly equal, including clock drift.
-A subset of a continuous recording can give a different alignment.
+Each recording gets a result in `sync.json`. `ok` means it has an alignment.
+`ambiguous` means there is not enough reliable evidence. `failed` means the
+recording could not be processed. Other recordings still get their results.
 
-The tool first matches each file independently. A branch, a failed group solve,
-a GPS time step, or a contradiction with an accepted independent mapping
-keeps the independent results for that candidate shot. Each result has a `shot`
-object with `single`, `joined`, or `ambiguous` status. Only `joined` means that
-a shared shot alignment was applied.
-
-After chapter matching, session placement uses container creation times and
-validated recording clocks. It needs two accepted GPS, motion, or joined-shot
-anchors from the same camera. One joined shot counts as one anchor. A short
-clip can use these anchors without its own motion match. A session mapping
-covers the whole clip, even outside the track. Its clock rate is 1, and its
-uncertainty must not exceed 10 seconds.
-
-Known camera serials form separate groups. Files without serials form one
-separate group. Different cameras with matching clocks and no serials are a
-remaining false-placement risk. Check the verification plots before use.
-
-The output uses schema `3.0.0` with a `videos` list, even for one input. The
-list has one entry per input, in input order. Each entry has its own status,
-offset, drift, and confidence data. A failed or ambiguous recording does not
-stop the others. `source.kind` identifies `gps`, `motion`, `shot`, or `session`
-evidence. `method` is `gps`, `motion`, or `session`. For a joined shot, `method`
-names the evidence that solved the shot. A session source names its supporting
-inputs and keeps the independent rejection reason. An ambiguous batch result
-has a session verdict of `insufficient` or `contradictory`, with a separate
-message. Neither verdict supplies an offset.
-
-Give each recording only once. A repeated path, including a symbolic link to
-the same file, fails at each later position. An input with the same recording
-identity and timeline as an earlier `ok` or `ambiguous` result also fails as a
-duplicate. For example, two exports of the same telemetry are duplicates.
-
-To inspect one recording or check its saved alignment:
-
-```sh
-gps-video-sync info ridge.MP4
-gps-video-sync telemetry ridge.MP4 --out ridge.npz
-gps-video-sync verify ridge.MP4 --track flight.igc \
-  --result sync.json --output ridge.png --frames 10 120
-```
-
-`info`, `telemetry`, and `verify` each accept exactly one recording. Their times
-are local to that file and start at zero. `--frames` values must be 0 or more
-and less than the recording duration. `verify` selects the entry in the saved
-result that has the same recording identity and local timeline. It draws a plot
-only for an `ok` result. Run `gps-video-sync COMMAND --help` for all options.
-
-Exit codes for `sync` and `verify`:
-
-- `0`: all matches are `ok`.
-- `2`: at least one match is `ambiguous` and no match is `failed`. An ambiguous
-  result has no usable offset.
-- `1`: at least one match is `failed`, or an input or run error occurs. Invalid
-  command-line arguments also give `1`.
-
-`sync` writes all per-file results before it returns a failure exit code.
-
-Results, `info` output, telemetry exports, and cache files contain absolute
-recording paths. Paths can show user names and directory names. Exports and
-cache files can also contain camera GPS times and serial numbers. Results
-contain recording dates and times. Remove this data before you share these files.
+Run `gps-video-sync sync --help` for more options.
+Results contain file paths and recording dates. Remove private data before sharing.
 
 ## Use the Python API
 
@@ -213,10 +150,10 @@ for data contracts, plugins, telemetry formats, and matching limits.
 ## Run the tests
 
 ```sh
-pip install -e '.[dev,verify]'
-python -m pytest
-python scripts/check_independent_videos.py
-python scripts/check_continuous_videos.py
+uv sync --extra dev --extra verify
+uv run pytest
+uv run python scripts/check_independent_videos.py
+uv run python scripts/check_continuous_videos.py
 ```
 
 Run the tests from a repository checkout. Release archives exclude tests and
@@ -226,7 +163,7 @@ contain flight coordinates, times, and media.
 - Extraction and alignment tests need no external program.
 - Parity tests use the `ffprobe` marker and need `ffprobe` 9 or later.
 - Frame tests need `ffmpeg` and Matplotlib.
-- To skip integration tests, run `python -m pytest -m 'not integration'`.
+- To skip integration tests, run `uv run pytest -m 'not integration'`.
 
 `scripts/check_continuous_videos.py` needs the `verify` extra and `ffmpeg`.
 It runs the API and the CLI on the bundled recordings with cold and warm
@@ -238,6 +175,17 @@ selection, plots, and frames against direct FFmpeg seeks.
 `scripts/check_independent_videos.py` checks independent motion crops and GPS
 recordings with gaps, overlaps, shuffled inputs, and isolated failures. It also
 checks exports and file-local frame extraction on the bundled videos.
+
+### Check an alignment visually
+
+Check an alignment with a plot:
+
+```sh
+gps-video-sync verify ridge.MP4 --track flight.igc --result sync.json --output ridge.png
+```
+
+Plot output requires the `verify` extra. Install it with
+`uv tool install 'gps-video-sync[verify]'`.
 
 ## License
 
