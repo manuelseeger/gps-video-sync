@@ -20,6 +20,11 @@ def test_creation_time_and_camera_start_survive_cache(tmp_path, monkeypatch, ver
         assert cold.camera_start.camera == "camera"
     else:
         assert cold.camera_start is None
+    from gps_video_sync.cli import _export
+    archive = tmp_path / "telemetry.npz"
+    _export(cold, archive)
+    restored = read_video(archive, source="npz")
+    assert restored.camera_start == cold.camera_start
     monkeypatch.setattr(gopro, "_recording", lambda *a: pytest.fail("cache did not retain creation time"))
     warm = read_video(path, cache_dir=tmp_path / "cache")
     assert warm.camera_start == cold.camera_start

@@ -37,6 +37,8 @@ def _export(telemetry, path):
                      media_offset_seconds=telemetry.media_offset_seconds)
     if telemetry.clock is not None:
         recording["clock"] = asdict(telemetry.clock)
+    if telemetry.camera_start is not None:
+        recording["camera_start"] = asdict(telemetry.camera_start)
     if Path(path).suffix.lower() == ".npz":
         reserved = {"time", "gps_time", "gps_utc", "recording", "chapters", "schema_version"}
         if reserved.intersection(telemetry.channels):
@@ -44,12 +46,12 @@ def _export(telemetry, path):
         np.savez_compressed(path, time=telemetry.time, **telemetry.channels,
                             gps_time=telemetry.gps_time, gps_utc=telemetry.gps_utc,
                             recording=json.dumps(recording, default=_json_default),
-                            schema_version="2.0.0")
+                            schema_version="3.0.0")
     elif Path(path).suffix.lower() == ".json":
         def nullable(values):
             values = np.asarray(values)
             return np.where(np.isfinite(values), values, None).tolist()
-        write_json(path, dict(schema_version="2.0.0", time=nullable(telemetry.time),
+        write_json(path, dict(schema_version="3.0.0", time=nullable(telemetry.time),
                              channels={k: nullable(v) for k, v in telemetry.channels.items()},
                              recording=recording, gps_time=nullable(telemetry.gps_time),
                              gps_utc=nullable(telemetry.gps_utc)))
@@ -96,7 +98,7 @@ def main(argv=None):
             if args.command == "telemetry":
                 _export(telemetry, args.out)
             else:
-                print(json.dumps(dict(schema_version="2.0.0", video=telemetry.video,
+                print(json.dumps(dict(schema_version="3.0.0", video=telemetry.video,
                                       input_file=str(Path(args.videos[0]).expanduser().resolve()),
                                       duration=telemetry.duration, samples=len(telemetry.time),
                                       start_seconds=float(telemetry.time[0]) if len(telemetry.time) else None,
@@ -114,7 +116,7 @@ def main(argv=None):
         if args.command == "sync":
             results = [r.to_dict() for r in match_videos(
                 track, args.videos, source=args.source, hz=args.hz, cache_dir=args.cache_dir)]
-            document = dict(schema_version="2.0.0", videos=results)
+            document = dict(schema_version="3.0.0", videos=results)
             if args.json:
                 write_json(args.json, document)
             else:

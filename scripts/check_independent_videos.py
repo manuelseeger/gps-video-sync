@@ -62,7 +62,7 @@ def check_synthetic(work):
         expected = [baseline[str(p)] for p in order]
         assert [r.to_dict() for r in match_videos(track, order, source="npz")] == expected
         document = cli("sync", order, "--track", igc, "--source", "npz")
-        assert document == dict(schema_version="2.0.0", videos=expected)
+        assert document == dict(schema_version="3.0.0", videos=expected)
     weak, bad = work / "weak.npz", work / "bad.npz"
     np.savez(weak, time=time, GYRO=np.zeros((len(time), 3)))
     np.savez(bad, time=time, GYRO=np.zeros(len(time)))
@@ -96,10 +96,10 @@ def main():
                 expected = [(baseline if len(order) > 1 else independent)[str(p)] for p in order]
                 assert [r.to_dict() for r in match_videos(track, order, cache_dir=cache)] == expected
                 document = cli("sync", order, "--track", FIXTURES / "flight.igc", "--cache-dir", cache)
-                assert document == dict(schema_version="2.0.0", videos=expected)
+                assert document == dict(schema_version="3.0.0", videos=expected)
         assert len(list((work / "shared").glob("*.npz"))) == 2
         saved = work / "results.json"
-        saved.write_text(json.dumps(dict(schema_version="2.0.0", videos=list(baseline.values()))))
+        saved.write_text(json.dumps(dict(schema_version="3.0.0", videos=list(baseline.values()))))
         recordings = []
         for index, path in enumerate(paths):
             telemetry = read_video(path, cache_dir=work / "shared")
@@ -115,10 +115,12 @@ def main():
             assert batch == dict(independent[str(path)], input_file=str(archive))
             cli("telemetry", [archive], "--source", "npz", "--out", exported_json)
             document = json.loads(exported_json.read_text())
-            assert document["schema_version"] == "2.0.0"
+            assert document["schema_version"] == "3.0.0"
             assert document["recording"] == dict(video=str(path), duration=telemetry.duration,
                                                   media_offset_seconds=0.,
-                                                  clock=json.loads(json.dumps(asdict(telemetry.clock))))
+                                                  clock=json.loads(json.dumps(asdict(telemetry.clock))),
+                                                  **({"camera_start": asdict(telemetry.camera_start)}
+                                                     if telemetry.camera_start else {}))
             assert document["time"] == telemetry.time.tolist()
             for key, values in telemetry.channels.items():
                 assert document["channels"][key] == np.where(np.isfinite(values), values, None).tolist()

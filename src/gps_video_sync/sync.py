@@ -5,7 +5,9 @@ import numpy as np
 from scipy.ndimage import gaussian_filter1d as gf
 from scipy.signal import correlate, correlation_lags
 from scipy.stats import linregress, theilslopes
-from .models import Track, Telemetry, SyncResult
+from dataclasses import replace
+from .models import (Track, Telemetry, SyncResult, Accepted, Ambiguous, Failed,
+                     TimeMapping, OwnGps, OwnMotion)
 
 
 MIN_GPS_SPAN_SECONDS = 10.
@@ -214,7 +216,7 @@ def match_features(utc, t, track_features, video_features, *, exclusion_seconds=
             i = np.nanargmax(r)
             details[key] = {"offset_seconds": float(offsets[i]), "score": float(r[i]), "overlap_seconds": int(n[i])}
     if not curves:
-        return SyncResult("ambiguous", message="Insufficient varying, overlapping motion (minimum 90 s)")
+        return SyncResult(Ambiguous("Insufficient varying, overlapping motion (minimum 90 s)"))
     numerator = np.zeros_like(offsets, float)
     denominator = np.zeros_like(offsets, float)
     for key, curve in curves.items():
@@ -226,7 +228,7 @@ def match_features(utc, t, track_features, video_features, *, exclusion_seconds=
         if key in curves:
             combined[~np.isfinite(curves[key])] = np.nan
     if not np.isfinite(combined).any():
-        return SyncResult("ambiguous", message="No common valid feature overlap")
+        return SyncResult(Ambiguous("No common valid feature overlap"))
     i = int(np.nanargmax(combined))
     candidate, best = float(offsets[i]), float(combined[i])
     alternatives = combined[abs(offsets-candidate) > exclusion_seconds]
@@ -259,9 +261,9 @@ def match_features(utc, t, track_features, video_features, *, exclusion_seconds=
     confidence["refinement_feature"] = refine
     accepted = (not boundary and best >= .38 and margin >= .08 and ratio >= 1.2
                 and (len(agreeing_groups) >= 2 or (best > .7 and margin > .25)))
-    return SyncResult("ok" if accepted else "ambiguous", candidate if accepted else None,
-                      2. if accepted else None, confidence=confidence, per_feature=details,
-                      message="" if accepted else "Weak or competing correlation peaks")
+    outcome = (Accepted(TimeMapping(candidate, 2., 1., OwnMotion())) if accepted
+               else Ambiguous("Weak or competing correlation peaks"))
+    return SyncResult(outcome, confidence=confidence, per_feature=details)
 
 
 def estimate_drift(utc, t, a, b, offset, *, absolute=False, window_seconds=400, search_seconds=8):
@@ -365,7 +367,7 @@ def synchronize(track: Track, telemetry: Telemetry) -> SyncResult:
 def _synchronize(track: Track, telemetry: Telemetry) -> SyncResult:
     timeline = dict(media_offset_seconds=telemetry.media_offset_seconds, duration=telemetry.duration)
     if len(telemetry.time) < 2:
-        return SyncResult("failed", message="No telemetry samples", date=track.date,
+        return SyncResult(Failed("No telemetry samples"), date=track.date,
                           video=telemetry.video, **timeline)
     origin_date = track.date
     gps_rejection = ""
@@ -453,7 +455,7 @@ def _synchronize(track: Track, telemetry: Telemetry) -> SyncResult:
             elif uncertainty > MAX_GPS_UNCERTAINTY_SECONDS:
                 gps_rejection = "GPS UTC observations do not constrain the clock over the whole video"
             else:
-                return SyncResult("ok", offset, uncertainty, "gps", confidence={"gps_samples": int(valid.sum()), "gps_inlier_fraction": inlier_fraction, "gps_span_seconds": float(np.ptp(gt)), "residual_std_seconds": scatter},
+                return SyncResult(Accepted(TimeMapping(offset, uncertainty, float(fit.slope) if detected else 1., OwnGps())), confidence={"gps_samples": int(valid.sum()), "gps_inlier_fraction": inlier_fraction, "gps_span_seconds": float(np.ptp(gt)), "residual_std_seconds": scatter},
                                   drift={"detected": detected, "clock_rate": float(fit.slope) if detected else 1.,
                                          "measured_clock_rate": float(fit.slope),
                                          "seconds_per_hour": float((fit.slope-1)*3600),
@@ -463,7 +465,7 @@ def _synchronize(track: Track, telemetry: Telemetry) -> SyncResult:
         gps_rejection = "Too few GPS UTC observations or no track date"
     utc, t, tf, vf = build_features(track, telemetry)
     if len(utc) < 2 or len(t) < 2:
-        result = SyncResult("ambiguous", message="Track or video spans less than two whole seconds")
+        result = SyncResult(Ambiguous("Track or video spans less than two whole seconds"))
     else:
         result = match_features(utc, t, tf, vf)
     result.date, result.video = track.date, telemetry.video
@@ -471,13 +473,15 @@ def _synchronize(track: Track, telemetry: Telemetry) -> SyncResult:
     if gps_rejection:
         result.confidence["gps_rejected"] = gps_rejection
         if result.status != "ok":
-            result.message = f"{gps_rejection}; motion: {result.message}"
+            result.outcome = Ambiguous(f"{gps_rejection}; motion {result.message}")
     if result.status == "ok":
         key = result.confidence["refinement_feature"]
         result.drift = estimate_drift(utc, t, tf[key], vf[key], result.offset_seconds, absolute=key == "yaw")
         if result.drift["detected"]:
-            result.offset_seconds = round(result.drift["intercept_seconds"], 3)
-            result.uncertainty_seconds = max(result.uncertainty_seconds,
-                                             3*result.drift["intercept_stderr_seconds"],
-                                             3*result.drift["residual_std_seconds"])
+            result.outcome = Accepted(replace(result.mapping,
+                offset_seconds=round(result.drift["intercept_seconds"], 3),
+                uncertainty_seconds=max(result.uncertainty_seconds,
+                                        3*result.drift["intercept_stderr_seconds"],
+                                        3*result.drift["residual_std_seconds"]),
+                clock_rate=result.drift["clock_rate"]))
     return result

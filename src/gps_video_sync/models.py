@@ -1,7 +1,7 @@
 from __future__ import annotations
 from dataclasses import dataclass, field, asdict
 from datetime import date, datetime, timezone, timedelta
-from typing import Any
+from typing import Any, Literal
 from numbers import Real
 import math
 import numpy as np
@@ -104,22 +104,167 @@ class Telemetry:
                          duration, gps_time[gps], self.gps_utc[gps],
                          self.media_offset_seconds + start)
 
+@dataclass(frozen=True)
+class OwnGps:
+    kind: Literal["gps"] = field(default="gps", init=False)
+
+
+@dataclass(frozen=True)
+class OwnMotion:
+    kind: Literal["motion"] = field(default="motion", init=False)
+
+
+@dataclass(frozen=True)
+class JoinedShot:
+    solved_by: Literal["gps", "motion"]
+    members: tuple[str, ...]
+    index: int
+    start_seconds: float
+    kind: Literal["shot"] = field(default="shot", init=False)
+
+
+@dataclass(frozen=True)
+class CameraSession:
+    support: str
+    other_supports: tuple[str, ...]
+    camera_start: CameraStart
+    independent_rejection: str
+    track_overlap_seconds: float
+    kind: Literal["session"] = field(default="session", init=False)
+
+    @property
+    def supporting(self) -> tuple[str, ...]:
+        return (self.support, *self.other_supports)
+
+
+MappingSource = OwnGps | OwnMotion | JoinedShot | CameraSession
+
+
+@dataclass(frozen=True)
+class TimeMapping:
+    offset_seconds: float
+    uncertainty_seconds: float
+    clock_rate: float
+    source: MappingSource
+
+    def utc_seconds(self, video_seconds: float) -> float:
+        return video_seconds * self.clock_rate + self.offset_seconds
+
+
+@dataclass(frozen=True)
+class SessionInsufficient:
+    reason: Literal["no_camera_start", "too_few_anchors", "loose_bound", "gps_step", "continuity_conflict"]
+
+    @property
+    def message(self) -> str:
+        return {
+            "no_camera_start": "No camera start time and recording clock",
+            "too_few_anchors": "Fewer than two accepted recordings from this camera",
+            "loose_bound": "Session timing does not constrain the clip within 10 s",
+            "gps_step": "A GPS UTC step blocks session placement",
+            "continuity_conflict": "Continuity candidate has no approved common mapping",
+        }[self.reason]
+
+
+@dataclass(frozen=True)
+class SessionContradiction:
+    reason: Literal["anchors_disagree", "recordings_overlap", "chapter_creation"]
+    recordings: tuple[str, ...]
+
+    @property
+    def message(self) -> str:
+        return {
+            "anchors_disagree": "Accepted recordings disagree on the camera clock offset",
+            "recordings_overlap": "Recordings overlap on the camera clock",
+            "chapter_creation": "Chapter creation times disagree by more than 1 s",
+        }[self.reason]
+
+
+SessionVerdict = SessionInsufficient | SessionContradiction
+
+
+@dataclass(frozen=True)
+class Accepted:
+    mapping: TimeMapping
+
+
+@dataclass(frozen=True)
+class Ambiguous:
+    independent: str
+    session: SessionVerdict | None = None
+
+
+@dataclass(frozen=True)
+class Failed:
+    message: str
+
+
+Outcome = Accepted | Ambiguous | Failed
+
+
+@dataclass(frozen=True)
+class ShotCandidate:
+    members: tuple[str, ...]
+    index: int
+    start_seconds: float
+    reason: str
+
+
 @dataclass
 class SyncResult:
-    status: str
-    offset_seconds: float | None = None
-    uncertainty_seconds: float | None = None
-    method: str = "motion"
+    outcome: Outcome
     confidence: dict[str, Any] = field(default_factory=dict)
     per_feature: dict[str, Any] = field(default_factory=dict)
     drift: dict[str, Any] = field(default_factory=dict)
     video: str | None = None
     input_file: str | None = None
     date: date | None = None
-    message: str = ""
     media_offset_seconds: float | None = None
     duration: float | None = None
-    shot: dict[str, Any] = field(default_factory=lambda: {"status": "single"})
+    shot_candidate: ShotCandidate | None = None
+
+    @property
+    def status(self) -> Literal["ok", "ambiguous", "failed"]:
+        if isinstance(self.outcome, Accepted):
+            return "ok"
+        return "ambiguous" if isinstance(self.outcome, Ambiguous) else "failed"
+
+    @property
+    def mapping(self) -> TimeMapping | None:
+        return self.outcome.mapping if isinstance(self.outcome, Accepted) else None
+
+    @property
+    def offset_seconds(self) -> float | None:
+        return self.mapping.offset_seconds if self.mapping else None
+
+    @property
+    def uncertainty_seconds(self) -> float | None:
+        return self.mapping.uncertainty_seconds if self.mapping else None
+
+    @property
+    def method(self) -> str:
+        source = self.mapping.source if self.mapping else OwnMotion()
+        return source.solved_by if isinstance(source, JoinedShot) else source.kind
+
+    @property
+    def message(self) -> str:
+        if isinstance(self.outcome, Failed):
+            return self.outcome.message
+        if isinstance(self.outcome, Ambiguous):
+            verdict = self.outcome.session
+            return self.outcome.independent + ("; session " + verdict.message if verdict else "")
+        return ""
+
+    @property
+    def shot(self) -> dict[str, Any]:
+        source = self.mapping.source if self.mapping else None
+        if isinstance(source, JoinedShot):
+            return {"status": "joined", "members": list(source.members), "index": source.index,
+                    "start_seconds": source.start_seconds, "reason": "", "diagnostics_coordinates": "shot"}
+        if self.shot_candidate:
+            return {"status": "ambiguous", **asdict(self.shot_candidate),
+                    "members": list(self.shot_candidate.members)}
+        return {"status": "single"}
 
     @property
     def video_start_utc(self) -> str | None:
@@ -129,15 +274,33 @@ class SyncResult:
                 + timedelta(seconds=self.offset_seconds)).isoformat()
 
     def to_dict(self) -> dict[str, Any]:
-        obj = asdict(self)
-        obj.pop("date")
+        obj = {k: v for k, v in asdict(self).items() if k not in {"outcome", "date", "shot_candidate"}}
+        source = self.mapping.source if self.mapping else None
+        serialized_source = asdict(source) if source else None
+        if isinstance(source, CameraSession):
+            serialized_source.pop("support")
+            serialized_source.pop("other_supports")
+            serialized_source["supporting"] = list(source.supporting)
+        elif isinstance(source, JoinedShot):
+            serialized_source["members"] = list(source.members)
+            serialized_source["supporting"] = [m for m in source.members if m != self.input_file]
+        verdict = self.outcome.session if isinstance(self.outcome, Ambiguous) else None
+        session = None
+        if verdict:
+            session = {**asdict(verdict), "message": verdict.message,
+                       "verdict": "insufficient" if isinstance(verdict, SessionInsufficient) else "contradictory"}
+            if isinstance(verdict, SessionContradiction):
+                session["recordings"] = list(verdict.recordings)
         iso = self.video_start_utc
-        rate = self.drift.get("clock_rate", 1.0)
-        obj.update(schema_version="2.0.0", mapping="utc_seconds = video_seconds * clockRate + offset_seconds",
+        obj.update(schema_version="3.0.0", mapping="utc_seconds = video_seconds * clockRate + offset_seconds",
+                   status=self.status, offset_seconds=self.offset_seconds,
+                   uncertainty_seconds=self.uncertainty_seconds, method=self.method, message=self.message,
+                   source=serialized_source, session=session, shot=self.shot,
                    video_start_utc=iso, videoStartUtcSeconds=self.offset_seconds,
                    videoStartUtc=iso.split("T")[1].replace("+00:00", "") if iso else None,
                    dateUtc=iso[:10] if iso else (self.date.isoformat() if self.date else None),
                    utc_origin_date=self.date.isoformat() if self.date else None,
-                   clockDriftDetected=self.drift.get("detected", False), clockRate=rate,
+                   clockDriftDetected=self.drift.get("detected", False),
+                   clockRate=self.mapping.clock_rate if self.mapping else None,
                    estimatedAbsoluteUncertaintySeconds=self.uncertainty_seconds)
         return obj

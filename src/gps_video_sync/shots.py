@@ -6,7 +6,7 @@ from typing import Literal, Sequence
 
 import numpy as np
 
-from .models import SyncResult, Telemetry, Track
+from .models import SyncResult, Telemetry, Track, Accepted, JoinedShot, ShotCandidate
 
 JOIN_SECONDS = .05
 
@@ -16,11 +16,6 @@ class Shot:
     members: tuple[int, ...]
     status: Literal["single", "joined", "ambiguous"]
     reason: str = ""
-
-    def metadata(self, results: Sequence[SyncResult], index: int, start: float) -> dict:
-        return {"status": self.status,
-                "members": [results[i].input_file for i in self.members],
-                "index": index, "start_seconds": start, "reason": self.reason}
 
 
 def _continuous(a: Telemetry, b: Telemetry) -> bool:
@@ -95,10 +90,10 @@ def concatenate(members: Sequence[Telemetry]) -> Telemetry:
 
 
 def project(result: SyncResult, members: Sequence[Telemetry]) -> list[SyncResult]:
-    offset, rate = result.offset_seconds, result.drift.get("clock_rate", 1.)
+    offset, rate = result.offset_seconds, result.mapping.clock_rate
     projected = []
     for member in members:
-        projected.append(replace(result, offset_seconds=offset, video=member.video,
+        projected.append(replace(result, outcome=Accepted(replace(result.mapping, offset_seconds=offset)), video=member.video,
                                  media_offset_seconds=member.media_offset_seconds,
                                  duration=member.duration, confidence=deepcopy(result.confidence),
                                  per_feature=deepcopy(result.per_feature), drift=deepcopy(result.drift)))
@@ -116,7 +111,7 @@ def _contradiction(baseline: SyncResult, projected: SyncResult) -> bool:
     day = ((projected.date - baseline.date).days * 86400
            if projected.date is not None and baseline.date is not None else 0.)
     delta = projected.offset_seconds - baseline.offset_seconds + day
-    rate_delta = projected.drift.get("clock_rate", 1.) - baseline.drift.get("clock_rate", 1.)
+    rate_delta = projected.mapping.clock_rate - baseline.mapping.clock_rate
     bound = baseline.uncertainty_seconds + projected.uncertainty_seconds
     return any(abs(delta + rate_delta * end) > bound for end in (0., baseline.duration))
 
@@ -150,9 +145,12 @@ def match_shots(track: Track, recordings: Sequence[Telemetry | None],
         for index, i in enumerate(shot.members):
             result = (replace(projected[index], input_file=baseline[i].input_file)
                       if shot.status == "joined" else replace(baseline[i]))
-            result.shot = shot.metadata(baseline, index, start)
+            identities = tuple(baseline[j].input_file for j in shot.members)
             if shot.status == "joined":
-                result.shot["diagnostics_coordinates"] = "shot"
+                result.outcome = Accepted(replace(result.mapping, source=JoinedShot(
+                    result.method, identities, index, start)))
+            else:
+                result.shot_candidate = ShotCandidate(identities, index, start, shot.reason)
             results[i] = result
             start += recordings[i].duration
     return results

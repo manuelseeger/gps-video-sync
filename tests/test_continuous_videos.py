@@ -63,7 +63,7 @@ def test_weak_rescue_exact_drift_boundaries_permutations_and_identity(chapters):
     for order in permutations(paths):
         actual = match_videos(track, order, source="npz")
         assert [r.to_dict() for r in actual] == [expected[paths.index(p)].to_dict() for p in order]
-        document = dict(schema_version="2.0.0", videos=[r.to_dict() for r in actual])
+        document = dict(schema_version="3.0.0", videos=[r.to_dict() for r in actual])
         for p in paths:
             assert select_result(document, read_video(p, source="npz")) == expected[paths.index(p)].to_dict()
 
@@ -176,8 +176,9 @@ def test_projection_veto_checks_both_ends(chapters, monkeypatch):
     original = sync._synchronize
     def conflicting(track, telemetry):
         if telemetry.video is None:
-            return replace(baseline, drift={"clock_rate": 1.004}, video=None,
-                           duration=telemetry.duration)
+            from gps_video_sync.models import Accepted
+            return replace(baseline, outcome=Accepted(replace(baseline.mapping, clock_rate=1.004)),
+                           drift={"clock_rate": 1.004}, video=None, duration=telemetry.duration)
         return original(track, telemetry)
     monkeypatch.setattr(sync, "_synchronize", conflicting)
     actual = match_videos(track, paths, source="npz")

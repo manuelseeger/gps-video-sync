@@ -32,7 +32,7 @@ def save(path, telemetry):
         metadata["clock"] = asdict(telemetry.clock)
     np.savez_compressed(path, time=telemetry.time, **telemetry.channels,
                         gps_time=telemetry.gps_time, gps_utc=telemetry.gps_utc,
-                        recording=json.dumps(metadata), schema_version="2.0.0")
+                        recording=json.dumps(metadata), schema_version="3.0.0")
 
 
 def unchanged(actual, expected):
@@ -167,7 +167,7 @@ def check_real(work):
         np.savez_compressed(saved_path, **content)
     for p, t in zip(paths, recordings):
         arrays_equal(read_video(p, cache_dir=cache), t)
-    document = dict(schema_version="2.0.0", videos=[r.to_dict() for r in expected])
+    document = dict(schema_version="3.0.0", videos=[r.to_dict() for r in expected])
     saved_result = work / "result.json"
     saved_result.write_text(json.dumps(document))
     exports = []

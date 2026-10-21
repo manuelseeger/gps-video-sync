@@ -1,4 +1,4 @@
-from .models import Track, Telemetry, SyncResult, RecordingClock
+from .models import Track, Telemetry, SyncResult, RecordingClock, Failed
 from .plugins import (TrackReader, VideoSource, register_track, register_video,
                       read_track, read_video)
 from .igc import IGCReader
@@ -56,7 +56,7 @@ def match_videos(track: Track, paths, *, source: str = "gopro", hz: float = 10,
                 raise ValueError("Duplicate recording timeline")
         except (OSError, ValueError, EOFError, zipfile.BadZipFile) as exc:
             telemetry = None
-            result = SyncResult("failed", video=identity, message=str(exc), date=track.date)
+            result = SyncResult(Failed(str(exc)), video=identity, date=track.date)
         else:
             result = _synchronize(track, telemetry)
             if result.status != "failed":
