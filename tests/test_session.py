@@ -71,9 +71,9 @@ def test_contradiction_is_distinct_from_one_anchor_insufficiency(track, tmp_path
     one = match_videos(track, [paths[0], weak], source="npz")[-1]
     both = match_videos(track, [*paths, weak], source="npz")[-1]
     assert (one.status, one.offset_seconds, one.to_dict()["session"]["verdict"]) == ("ambiguous", None, "insufficient")
-    assert one.message == "Insufficient varying, overlapping motion (minimum 90 s); session Fewer than two accepted recordings from this camera"
+    assert one.message == "Insufficient varying, overlapping motion (minimum 90 s). Fewer than two accepted recordings from this camera"
     assert (both.status, both.offset_seconds, both.to_dict()["session"]["verdict"]) == ("ambiguous", None, "contradictory")
-    assert both.message == "Insufficient varying, overlapping motion (minimum 90 s); session Accepted recordings disagree on the camera clock offset"
+    assert both.message == "Insufficient varying, overlapping motion (minimum 90 s). Accepted recordings disagree on the camera clock offset"
     assert both.to_dict()["session"]["recordings"] == list(map(str, paths))
 
 
@@ -93,7 +93,7 @@ def test_camera_timeline_overlap_is_contradictory(track, tmp_path):
     result = match_videos(track, [*paths, weak], source="npz")[-1]
     assert result.status == "ambiguous"
     assert result.offset_seconds is None
-    assert result.message == "Insufficient varying, overlapping motion (minimum 90 s); session Recordings overlap on the camera clock"
+    assert result.message == "Insufficient varying, overlapping motion (minimum 90 s). Recordings overlap on the camera clock"
     assert result.to_dict()["session"]["recordings"] == sorted([str(paths[0]), str(weak)])
 
 
@@ -126,7 +126,9 @@ def test_gps_step_and_failed_recording_are_not_promoted(track, tmp_path):
     results = match_videos(track, [*paths, stepped, empty], source="npz")
     assert [r.status for r in results] == ["ok", "ok", "ambiguous", "failed"]
     assert results[2].offset_seconds is None
-    assert results[2].message == "GPS UTC has a step of more than 0.1 s; motion Insufficient varying, overlapping motion (minimum 90 s); session A GPS UTC step blocks session placement"
+    assert results[2].to_dict()["session"]["verdict"] == "contradictory"
+    assert results[2].to_dict()["session"]["recordings"] == [str(stepped)]
+    assert results[2].message == "GPS UTC has a step of more than 0.1 s; motion Insufficient varying, overlapping motion (minimum 90 s). A GPS UTC step blocks session placement"
     assert results[3].offset_seconds is None
     assert results[3].message == "No telemetry samples"
 
@@ -163,7 +165,8 @@ def test_unapproved_continuity_mapping_blocks_session_rescue(track, tmp_path):
     assert results[0].offset_seconds == 100
     assert results[1].offset_seconds == pytest.approx(130.3)
     assert results[2].offset_seconds is None
-    assert results[2].message == "Insufficient varying, overlapping motion (minimum 90 s); session Continuity candidate has no approved common mapping"
+    assert results[2].to_dict()["session"]["verdict"] == "contradictory"
+    assert results[2].message == "Insufficient varying, overlapping motion (minimum 90 s). Continuity candidate has no approved common mapping"
     assert results[2].shot["status"] == "ambiguous"
 
 
@@ -174,7 +177,7 @@ def test_chapter_creation_disagreement_is_contradictory(track, tmp_path):
     results = match_videos(track, [first, second, other], source="npz")
     assert [r.status for r in results] == ["ok", "ambiguous", "ok"]
     assert results[1].offset_seconds is None
-    assert results[1].message == "Insufficient varying, overlapping motion (minimum 90 s); session Chapter creation times disagree by more than 1 s"
+    assert results[1].message == "Insufficient varying, overlapping motion (minimum 90 s). Chapter creation times disagree by more than 1 s"
     assert results[1].to_dict()["session"]["recordings"] == [str(first), str(second)]
 
 

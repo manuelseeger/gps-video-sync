@@ -401,7 +401,7 @@ An ambiguous batch result has a `session` object with `verdict`, `reason`, and
   "Accepted recordings disagree on the camera clock offset".
 
 Both verdicts keep status `ambiguous` and provide no offset. The top-level
-`message` keeps the independent rejection and appends the session message.
+`message` keeps the independent rejection. A session verdict adds its message as a second sentence.
 An independent `synchronize` call has no session verdict.
 
 Exit codes are 0 when every match is `ok`, 2 when a match is `ambiguous` and no

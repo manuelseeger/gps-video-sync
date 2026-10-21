@@ -7,7 +7,7 @@ from typing import Literal, Sequence
 import numpy as np
 
 from .models import (SyncResult, Telemetry, Track, Accepted, JoinedShot, ShotCandidate,
-                     SessionInsufficient, SessionContradiction)
+                     SessionContradiction)
 
 JOIN_SECONDS = .05
 
@@ -130,7 +130,8 @@ def match_shots(track: Track, recordings: Sequence[Telemetry | None],
         members = [recordings[i] for i in shot.members]
         reason, projected = shot.reason, None
         identities = tuple(baseline[j].input_file for j in shot.members)
-        block = SessionInsufficient("continuity_conflict") if shot.status == "ambiguous" else None
+        block = (SessionContradiction("continuity_conflict", identities)
+                 if shot.status == "ambiguous" else None)
         creations = [m.camera_start.seconds - m.clock.origin_seconds for m in members
                      if m.camera_start is not None and m.clock is not None]
         if creations and max(creations) - min(creations) > 1.:
@@ -141,7 +142,7 @@ def match_shots(track: Track, recordings: Sequence[Telemetry | None],
                 reason = "A member failed independent synchronization"
             elif any(_gps_step(baseline[i]) for i in shot.members):
                 reason = "A GPS UTC step blocks shot synchronization"
-                block = SessionInsufficient("gps_step")
+                block = SessionContradiction("gps_step", identities)
             else:
                 solved = _synchronize(track, concatenate(members))
                 if solved.status != "ok":
@@ -155,7 +156,7 @@ def match_shots(track: Track, recordings: Sequence[Telemetry | None],
         if reason:
             shot = replace(shot, status="ambiguous", reason=reason)
             if block is None and any(baseline[i].status in {"ok", "failed"} for i in shot.members):
-                block = SessionInsufficient("continuity_conflict")
+                block = SessionContradiction("continuity_conflict", identities)
         start = 0.
         for index, i in enumerate(shot.members):
             result = (replace(projected[index], input_file=baseline[i].input_file)

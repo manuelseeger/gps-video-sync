@@ -28,9 +28,9 @@ def test_joined_source_retains_solving_method_and_supports():
 def test_only_accepted_outcome_has_an_offset():
     for outcome, status, message in [
         (Ambiguous("Weak motion", SessionInsufficient("too_few_anchors")), "ambiguous",
-         "Weak motion; session Fewer than two accepted recordings from this camera"),
+         "Weak motion. Fewer than two accepted recordings from this camera"),
         (Ambiguous("Weak motion", SessionContradiction("anchors_disagree", ("a.mp4", "b.mp4"))), "ambiguous",
-         "Weak motion; session Accepted recordings disagree on the camera clock offset"),
+         "Weak motion. Accepted recordings disagree on the camera clock offset"),
         (Failed("No telemetry samples"), "failed", "No telemetry samples"),
     ]:
         value = SyncResult(outcome).to_dict()

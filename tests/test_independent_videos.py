@@ -334,7 +334,7 @@ def test_sync_result_retains_local_timeline(local_timelines, tmp_path, case, sta
     if status == "ambiguous":
         expected.update(session={"verdict": "insufficient", "reason": "no_camera_start",
                                  "message": "No camera start time and recording clock"},
-                        message=result.message + "; session No camera start time and recording clock")
+                        message=result.message + ". No camera start time and recording clock")
     assert batch.to_dict() == expected
 
 

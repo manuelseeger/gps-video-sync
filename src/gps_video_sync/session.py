@@ -129,7 +129,7 @@ def match_session(track: Track, recordings: Sequence[Telemetry | None],
                             source.members if isinstance(source, JoinedShot) else (result.input_file,))
         blocked = result.shot_candidate.session_block if result.shot_candidate else None
         if "step" in result.confidence.get("gps_rejected", ""):
-            blocked = SessionInsufficient("gps_step")
+            blocked = SessionContradiction("gps_step", (result.input_file,))
         members.append(SessionMember(result.input_file, start, telemetry.duration, anchor, blocked))
     placements = place_session(members)
     for index, (result, telemetry) in enumerate(zip(results, recordings)):

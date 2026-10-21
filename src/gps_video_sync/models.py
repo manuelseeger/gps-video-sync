@@ -153,7 +153,7 @@ class TimeMapping:
 
 @dataclass(frozen=True)
 class SessionInsufficient:
-    reason: Literal["no_camera_start", "too_few_anchors", "loose_bound", "gps_step", "continuity_conflict"]
+    reason: Literal["no_camera_start", "too_few_anchors", "loose_bound"]
 
     @property
     def message(self) -> str:
@@ -161,14 +161,12 @@ class SessionInsufficient:
             "no_camera_start": "No camera start time and recording clock",
             "too_few_anchors": "Fewer than two accepted recordings from this camera",
             "loose_bound": "Session timing does not constrain the clip within 10 s",
-            "gps_step": "A GPS UTC step blocks session placement",
-            "continuity_conflict": "Continuity candidate has no approved common mapping",
         }[self.reason]
 
 
 @dataclass(frozen=True)
 class SessionContradiction:
-    reason: Literal["anchors_disagree", "recordings_overlap", "chapter_creation"]
+    reason: Literal["anchors_disagree", "recordings_overlap", "chapter_creation", "gps_step", "continuity_conflict"]
     recordings: tuple[str, ...]
 
     @property
@@ -177,6 +175,8 @@ class SessionContradiction:
             "anchors_disagree": "Accepted recordings disagree on the camera clock offset",
             "recordings_overlap": "Recordings overlap on the camera clock",
             "chapter_creation": "Chapter creation times disagree by more than 1 s",
+            "gps_step": "A GPS UTC step blocks session placement",
+            "continuity_conflict": "Continuity candidate has no approved common mapping",
         }[self.reason]
 
 
@@ -253,7 +253,7 @@ class SyncResult:
             return self.outcome.message
         if isinstance(self.outcome, Ambiguous):
             verdict = self.outcome.session
-            return self.outcome.independent + ("; session " + verdict.message if verdict else "")
+            return self.outcome.independent + (". " + verdict.message if verdict else "")
         return ""
 
     @property
