@@ -13,7 +13,7 @@ list of file-local `SyncResult` values in input order.
 - `Track(time, latitude, longitude, altitude, date=None, altitude_source="gps")`
   contains NumPy arrays. Time increases in UTC seconds from midnight of the
   track date. Coordinates are in degrees. Altitude is in metres.
-- `Telemetry(time, channels, video=None, duration=None, gps_time=[], gps_utc=[], media_offset_seconds=0, clock=None)`
+- `Telemetry(time, channels, video=None, duration=None, gps_time=[], gps_utc=[], media_offset_seconds=0, clock=None, camera_start=None)`
   contains increasing, nonnegative, file-local video seconds and NumPy channel
   arrays. `gps_time` and `gps_utc` default to empty arrays. Each channel has one
   row per time sample. `video` identifies the recording. The GoPro source uses
@@ -21,11 +21,15 @@ list of file-local `SyncResult` values in input order.
   interval `[0, duration)`. `gps_time` contains local video seconds for camera
   GPS observations. `gps_utc` contains the related Unix UTC seconds.
   `clock` is optional validated `RecordingClock` continuity evidence.
+  `camera_start` is optional `CameraStart` evidence for session placement.
 - `RecordingClock(origin_seconds, reach_seconds, sample_counters, camera=None)`
   contains a finite sensor-clock origin at local video time zero and a finite,
   nonnegative origin error bound. `sample_counters` maps stream names to exact
   integer `(start, end)` cumulative counter endpoints, with `0 <= start < end`.
   `camera` is an optional nonempty serial number. The sensor clock is not UTC.
+- `CameraStart(seconds, bound_seconds, camera=None)` contains camera-clock time
+  at local video zero, not UTC. `seconds` and the nonnegative error bound are
+  finite. `camera` is an optional nonempty serial number.
 - `Telemetry.slice(start, end)` selects the half-open interval `[start, end)`
   and subtracts `start` from video and GPS times. The bounds must be finite,
   with `0 <= start < end`. When the duration is known, `end` must not exceed it.
@@ -33,19 +37,28 @@ list of file-local `SyncResult` values in input order.
   and adds `start` to `media_offset_seconds`. Nested slices add their media
   offsets. Frame extraction adds this offset to slice-local seconds before it
   seeks the original recording. The synchronization offset of a slice refers
-  to the start of the slice. Every slice clears `clock`, including a slice of
-  the full duration. Counter endpoints cannot be reused for a crop.
-- `SyncResult` contains the recording identity in `video`, status, offset,
-  uncertainty, method, confidence, per-feature data, drift data, date, and
-  message. `media_offset_seconds` and `duration` identify the local timeline
-  used for matching. They copy the current telemetry values, also for
+  to the start of the slice. Every slice clears `clock` and `camera_start`,
+  including a slice of the full duration. Counter endpoints cannot be reused
+  for a crop.
+- `SyncResult(outcome, ...)` stores `Accepted(TimeMapping)`, `Ambiguous`, or
+  `Failed` in `outcome`. Only `Accepted` has a mapping. `status`,
+  `offset_seconds`, `uncertainty_seconds`, `method`, and `message` are derived.
+  The result also contains the recording identity in `video`, confidence,
+  per-feature data, drift diagnostics, and date. `media_offset_seconds` and
+  `duration` identify the local timeline used for matching. They copy the current telemetry values, also for
   ambiguous results and for failures with valid telemetry. The media offset is
   `null` when extraction or telemetry validation fails. The duration is `null`
   when unknown. Batch results also contain `input_file`, the canonical input
   path. For NPZ input, `video` identifies the original recording and
-  `input_file` identifies the archive. `to_dict()` uses schema `2.0.0`.
+  `input_file` identifies the archive. `to_dict()` uses schema `3.0.0`.
   Direct array-based callers can omit recording identity and duration.
   Frame extraction needs both.
+- `TimeMapping(offset_seconds, uncertainty_seconds, clock_rate, source)` owns
+  the whole-clip mapping. `source` is `OwnGps`, `OwnMotion`, `JoinedShot`, or
+  `CameraSession`. Drift diagnostics do not set the mapping rate.
+- `Ambiguous(independent, session=None)` keeps the independent rejection text.
+  `session` is `SessionInsufficient`, `SessionContradiction`, or `None` when
+  no batch placement ran. `Failed(message)` has no mapping.
 
 `synchronize` raises `ValueError` when the track or telemetry is not valid. It
 returns a `failed` result when the telemetry has fewer than two samples.
@@ -77,7 +90,9 @@ and counters can satisfy these checks. Check the verification plots before use.
 
 A continuous shot concatenates local telemetry on cumulative file durations
 and runs the existing single-recording matcher. A failed independent member
-cannot be promoted. A group result that is not `ok` retains all independent
+cannot be promoted. An independent GPS UTC step also prevents a shared shot
+mapping. Chapter creation times must agree within 1 second. A larger difference
+is a contradiction. A group result that is not `ok` retains all independent
 results. A GPS step reported on the shot but on no independent member also
 retains them, even when the shot has an accepted motion fit. The projected
 mapping must agree with every independent `ok` mapping at both ends of that
@@ -88,14 +103,16 @@ Each projected member keeps its recording identity, media offset, duration,
 and date. Offsets use the left fold `O_next = O + clockRate * duration` with
 no rounding, so each end equals the next start as a floating-point value.
 Input permutations give the same result per recording. A subset of a
-continuous shot can give a different result. Unrelated inputs retain their
-independent results.
+continuous shot can give a different result. Session placement does not change
+accepted shot projections.
 
-Every result has `shot.status`. `single` means independent matching without
-a candidate group. `joined` means projection was applied. `ambiguous` means
-a candidate group or branch retained independent results. Group metadata
+Every result has `shot.status`. `single` means no candidate continuity group.
+`joined` means projection was applied. `ambiguous` means a candidate group or
+branch has no approved common mapping. Session placement can still accept a
+member when the candidate has no accepted or failed members and no conflict. Group metadata
 also has `members` in chronological order, `index`, `start_seconds` on the
-candidate shot timeline, and `reason`. Branch members have singleton metadata.
+candidate shot timeline, and `reason`. Branch metadata names the whole candidate
+group in sensor-clock and recording-identity order.
 Joined results label `shot.diagnostics_coordinates` as `shot`. Their
 `confidence`, `per_feature`, and `drift` diagnostics, including candidate
 offsets, window midpoints, and drift intercepts, refer to the shot timeline.
@@ -113,6 +130,47 @@ result, a later input with the same `video`, `media_offset_seconds`, and
 timeline. Duplicate failures use the canonical input path as `video` and have
 `null` media offset and duration. Different crops of one recording are
 separate timelines.
+
+### Camera-session placement
+
+After chapter matching, `match_videos` places unresolved clips from accepted
+recordings. It partitions `CameraStart` evidence by serial. Each known serial
+has its own group. Missing serials form one group and never join a known serial.
+
+An anchor is an accepted GPS, motion, or joined-shot mapping with camera-start
+evidence and a known duration. A joined shot counts once, at its earliest
+available chapter. Session results never become anchors. At least two anchor
+units are required. Placement does not use the target's correlation peaks.
+
+For an anchor, the camera offset is its mapping offset minus its camera start.
+Its bound is the mapping uncertainty plus the camera-start bound. Every pair
+must agree within the sum of those bounds plus `0.0002 * abs(camera separation)`.
+This test is independent of the target. A disagreement makes every unresolved
+member of that camera group contradictory. Camera intervals that overlap by
+more than the sum of their camera-start bounds also contradict the group.
+
+For each target, every anchor predicts an offset at the target's camera start.
+The prediction bound is the anchor bound plus `0.0002 * abs(camera separation)`.
+The intersection of these intervals gives the allowed offsets. Its midpoint is
+the offset. Its half width, plus the target's camera-start bound, plus
+`0.002 * duration`, is the whole-clip uncertainty. An empty intersection is a
+contradiction. An uncertainty above 10 seconds is insufficient evidence.
+Session mappings use media clock rate 1. Camera-clock drift does not set the
+media rate.
+
+Placement keeps accepted results and failed results unchanged. Joined chapters
+keep their projected offsets and rates. A GPS UTC step blocks promotion. An
+unapproved continuity candidate cannot promote other members when it retains
+an accepted member or contains a failed member. Branches and conflicting
+serials also block placement. Chapter creation times that differ by more than
+1 second are contradictory.
+
+A session mapping covers the whole clip. Partial or zero track overlap does
+not prevent placement. `source.track_overlap_seconds` reports coverage only.
+
+Files without serials can come from different cameras. Coincident camera
+clocks can then pass the session checks and cause a false placement. Two-camera
+negative media are not available. Verification plots remain necessary.
 
 ### Time mapping
 
@@ -133,7 +191,8 @@ example, an offset of 86410 seconds gives `utc_origin_date` 2026-01-01 and
 date.
 
 `clockDriftDetected`, `clockRate`, and `estimatedAbsoluteUncertaintySeconds`
-report drift and uncertainty. An ambiguous result has no offset.
+report drift and uncertainty. Ambiguous and failed results have no offset,
+uncertainty, or `clockRate`.
 `confidence.candidate_offset_seconds` is diagnostic data, not an accepted
 alignment.
 
@@ -222,6 +281,13 @@ GPS9 UTC days and seconds, or GPS5 with GPSU timestamps, supply absolute time.
 GPS9 takes priority. The extractor uses only 3D fixes. File creation dates and
 the STMP sensor clock are not UTC references.
 
+The reader parses `mvhd` creation seconds in version 0 and version 1 headers.
+Zero means missing. With a validated recording clock, GoPro extraction builds
+`CameraStart` as creation seconds plus `RecordingClock.origin_seconds`.
+Its bound is 1 second for creation-time quantization plus the recording-clock
+reach. Chapters use the recording creation time and their own sensor-clock
+origin.
+
 ### Continuity evidence
 
 The reader extracts sensor `STMP` microseconds and cumulative integer `TSMP`
@@ -247,7 +313,8 @@ a remaining false-join risk. Two-camera negative media are not available.
 
 The default cache directory is `~/.cache/gps-video-sync`. Each recording has
 its own key. The key contains the canonical absolute path, file size,
-nanosecond modification time, sample rate, and cache version `3.0.0`.
+nanosecond modification time, sample rate, and cache version `4.0.0`.
+The cache stores creation seconds and the validated recording clock.
 Reordering or removing other files reuses the cache of a recording.
 Size or modification-time changes invalidate the key.
 Cache writes are atomic. The extractor rebuilds corrupt caches. An unavailable
@@ -294,18 +361,48 @@ Common options follow the command name:
 
 Invalid command-line arguments give exit code 1 and a usage message.
 
-`info` writes schema `2.0.0` JSON to stdout. It contains `video`, `input_file`,
+`info` writes schema `3.0.0` JSON to stdout. It contains `video`, `input_file`,
 `duration`, `samples`, `start_seconds`, `end_seconds`, `channels` with array
 shapes, and `gps_samples`.
 `telemetry --out` accepts a path that ends in `.npz` or `.json`.
 
 ### Sync results
 
-`sync` writes a JSON object with `schema_version: "2.0.0"` and a `videos` list,
+`sync` writes a JSON object with `schema_version: "3.0.0"` and a `videos` list,
 also for one input. Each entry is a serialized `SyncResult`. Entries are in
 input order. `--json PATH` writes the document only to that file. Otherwise
 the document goes to stdout. `sync` writes all per-file results before it
 returns a failure exit code.
+
+`source` is `null` without an accepted mapping. An accepted source has one of
+these `kind` values:
+
+- `gps` is the recording's own GPS evidence.
+- `motion` is the recording's own motion evidence.
+- `shot` is a joined-shot projection. It includes `solved_by`, `members`,
+  `index`, `start_seconds`, and `supporting`. The supports exclude the current
+  input. `method` is the shot's `solved_by`, either `gps` or `motion`.
+- `session` is camera-session placement. It includes a nonempty `supporting`
+  list of anchor input paths, `camera_start`, `independent_rejection`, and
+  `track_overlap_seconds`. `camera_start` has `seconds`, `bound_seconds`, and
+  `camera`. Supports name all chapters of a supporting joined shot.
+  `method` is `session`.
+
+An ambiguous batch result has a `session` object with `verdict`, `reason`, and
+`message`. The verdict types have different meanings:
+
+- `insufficient` means that the evidence cannot constrain placement. Reasons
+  are `no_camera_start`, `too_few_anchors`, `loose_bound`, `gps_step`, or
+  `continuity_conflict`. For example, `too_few_anchors` reports
+  "Fewer than two accepted recordings from this camera".
+- `contradictory` means that the timing evidence conflicts. Reasons are
+  `anchors_disagree`, `recordings_overlap`, or `chapter_creation`. It also
+  names the affected `recordings`. For example, `anchors_disagree` reports
+  "Accepted recordings disagree on the camera clock offset".
+
+Both verdicts keep status `ambiguous` and provide no offset. The top-level
+`message` keeps the independent rejection and appends the session message.
+An independent `synchronize` call has no session verdict.
 
 Exit codes are 0 when every match is `ok`, 2 when a match is `ambiguous` and no
 match is `failed`, and 1 when a match is `failed` or a run error occurs.
@@ -316,9 +413,9 @@ Python traceback.
 ### Verification and frames
 
 `verify` reads `--result` or synchronizes the single recording.
-A saved document must use schema `2.0.0` and contain a nonempty `videos` list.
+A saved document must use schema `3.0.0` and contain a nonempty `videos` list.
 `verify` checks every entry, not only the selected entry. Each entry needs
-schema `2.0.0`, a nonempty `video`, a valid status, and timeline metadata.
+schema `3.0.0`, a nonempty `video`, a valid status, and timeline metadata.
 `confidence`, `per_feature`, and `drift` must be objects or `null`. Offsets
 must be finite. Uncertainties must be finite and nonnegative. An `ok` entry
 needs a valid alignment.
@@ -373,15 +470,19 @@ matching but not frame extraction. The source keeps stored sample times. The
 sample rate and cache options do not resample NPZ input, but `--hz` must still
 be positive and finite.
 
-Exports use schema `2.0.0` and keep the local arrays. NPZ reserves `time`,
+Exports use schema `3.0.0` and keep the local arrays. NPZ reserves `time`,
 `gps_time`, `gps_utc`, `schema_version`, and `recording`. An NPZ export rejects a
 channel with one of these names or the name `chapters`. `recording` is a scalar
 JSON object with `video`, `duration`, and `media_offset_seconds`, plus optional
-`clock`. NPZ import keeps these fields. `clock` contains `origin_seconds`,
-`reach_seconds`, `sample_counters`, and optional `camera`. Counter endpoints
+`clock` and `camera_start`. NPZ import keeps these fields. `clock` contains
+`origin_seconds`, `reach_seconds`, `sample_counters`, and optional `camera`. Counter endpoints
 are JSON integer pairs. Missing or malformed optional clocks leave ordinary
-telemetry and matching usable. A nonzero media offset discards the clock.
-The source rejects archives with `chapters` data or another schema version.
+telemetry and matching usable. `camera_start` contains `seconds`,
+`bound_seconds`, and optional `camera`. Missing or malformed camera-start
+metadata does not prevent independent matching. Import keeps camera-start
+evidence only with a valid recording clock. A nonzero media offset discards
+both kinds of timing evidence. The source rejects archives with `chapters` data
+or another schema version.
 
 JSON telemetry contains `schema_version`, `time`, `channels`, `gps_time`,
 `gps_utc`, and `recording` with the same identity and timeline fields.

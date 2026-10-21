@@ -2,7 +2,8 @@
 
 Align action-camera telemetry with an IGC flight track. The tool calculates a
 video-to-UTC offset, checks clock drift, and plots the alignment. It uses camera
-GPS time when available and falls back to motion matching.
+GPS time when available and falls back to motion matching. In a batch, two
+accepted recordings from the same camera can place clips with weak evidence.
 
 My GoPro clock often has the wrong date or time. I use this tool to align the
 video with the GPS track after recording.
@@ -30,7 +31,7 @@ gps-video-sync sync takeoff.MP4 ridge.MP4 landing.MP4 --track flight.igc --json 
 ```
 
 Recordings can have gaps, overlap, or come from different cameras. You can
-give them in any order. Unrelated recordings keep their independent results.
+give them in any order. Session placement keeps accepted results unchanged.
 
 The tool detects continuous chapters from sensor-clock junctions and exact
 cumulative sample counters inside the files. Names do not establish continuity.
@@ -40,15 +41,31 @@ timeline. Adjacent chapter boundaries are exactly equal, including clock drift.
 A subset of a continuous recording can give a different alignment.
 
 The tool first matches each file independently. A branch, a failed group solve,
-a new GPS time step, or a contradiction with an accepted independent mapping
-keeps the independent results. Missing continuity evidence also keeps files
-independent. Each result has a `shot` object with `single`, `joined`, or
-`ambiguous` status. Only `joined` means that a shared alignment was applied.
+a GPS time step, or a contradiction with an accepted independent mapping
+keeps the independent results for that candidate shot. Each result has a `shot`
+object with `single`, `joined`, or `ambiguous` status. Only `joined` means that
+a shared shot alignment was applied.
 
-The output uses schema `2.0.0` with a `videos` list, even for one input. The
+After chapter matching, session placement uses container creation times and
+validated recording clocks. It needs two accepted GPS, motion, or joined-shot
+anchors from the same camera. One joined shot counts as one anchor. A short
+clip can use these anchors without its own motion match. A session mapping
+covers the whole clip, even outside the track. Its clock rate is 1, and its
+uncertainty must not exceed 10 seconds.
+
+Known camera serials form separate groups. Files without serials form one
+separate group. Different cameras with matching clocks and no serials are a
+remaining false-placement risk. Check the verification plots before use.
+
+The output uses schema `3.0.0` with a `videos` list, even for one input. The
 list has one entry per input, in input order. Each entry has its own status,
 offset, drift, and confidence data. A failed or ambiguous recording does not
-stop the others.
+stop the others. `source.kind` identifies `gps`, `motion`, `shot`, or `session`
+evidence. `method` is `gps`, `motion`, or `session`. For a joined shot, `method`
+names the evidence that solved the shot. A session source names its supporting
+inputs and keeps the independent rejection reason. An ambiguous batch result
+has a session verdict of `insufficient` or `contradictory`, with a separate
+message. Neither verdict supplies an offset.
 
 Give each recording only once. A repeated path, including a symbolic link to
 the same file, fails at each later position. An input with the same recording
@@ -99,16 +116,17 @@ telemetry = read_video("ridge.MP4", hz=10)
 result = synchronize(track, telemetry)
 ```
 
-`match_videos` returns one result per input, in input order. It applies shared
-alignment only to confirmed continuous chapters. A file error gives a `failed`
-result for that file only. `read_video` reads one recording. `synchronize`
-matches one recording and also accepts array-based `Telemetry`.
+`match_videos` returns one result per input, in input order. It joins confirmed
+continuous chapters and places unresolved clips from camera-session anchors.
+A file error gives a `failed` result for that file only. `read_video` reads one
+recording. `synchronize` matches one recording and also accepts array-based
+`Telemetry`.
 
 To match exported telemetry, use `source="npz"` in the API or `--source npz` in
 the CLI. NPZ exports from `telemetry --out` keep the original recording
-identity, duration, media offset, and optional continuity evidence.
-`Telemetry.slice` clears continuity evidence. In a batch result, `input_file`
-identifies the NPZ archive.
+identity, duration, media offset, and optional recording-clock and camera-start
+evidence. `Telemetry.slice` clears both kinds of timing evidence. In a batch
+result, `input_file` identifies the NPZ archive.
 
 The result maps video seconds to UTC seconds from midnight of the track date:
 
@@ -184,7 +202,10 @@ Motion matching needs at least 90 seconds of usable overlap. The overlap must
 also cover at least 65% of the shorter feature sequence. Each independent file
 or confirmed continuous group needs enough varying motion. Repeated turns,
 data gaps, or low motion can produce ambiguous or false matches. Check the plot
-and distinctive events before you use an alignment. Short clips cannot establish clock stability.
+and distinctive events before you use an alignment. Short clips cannot establish
+clock stability. Session placement uses other accepted recordings to place such
+clips. A GPS UTC step blocks placement. A continuity candidate with no approved
+common mapping cannot use session placement when it retains an accepted member.
 
 See the [API and format reference](https://github.com/manuelseeger/gps-video-sync/blob/main/docs/reference.md)
 for data contracts, plugins, telemetry formats, and matching limits.
