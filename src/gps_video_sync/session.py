@@ -42,7 +42,6 @@ SessionPlacement = SessionMapping | SessionVerdict
 
 
 def place_session(members: Sequence[SessionMember]) -> dict[str, SessionPlacement]:
-    """Place unresolved recordings on the camera clock without target correlations."""
     cameras: dict[str | None, list[SessionMember]] = {}
     for member in members:
         cameras.setdefault(member.start.camera, []).append(member)
