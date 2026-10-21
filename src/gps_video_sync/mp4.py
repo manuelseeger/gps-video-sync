@@ -8,6 +8,16 @@ from pathlib import Path
 import struct
 from typing import NamedTuple
 
+PROVENANCE_UUID = bytes.fromhex("d3f1a7f4b6c84ad5a89e204803be71a2")
+PROVENANCE_VERSION = 1
+
+
+def _original_creation(payload):
+    if len(payload) != 9 or payload[0] != PROVENANCE_VERSION:
+        raise ValueError("invalid creation-time provenance")
+    return struct.unpack_from(">Q", payload, 1)[0]
+
+
 MAX_METADATA = 64 << 20
 MAX_BOXES = 100_000
 MAX_TRACKS = 128
@@ -71,6 +81,9 @@ def _version(data, supported=(0,)):
 class _Reader:
     def __init__(self):
         self.boxes = 0
+        self.original_creation = None
+        self.moov_offset = None
+        self.has_size_zero = False
 
     def header(self, raw, start, end, extended=b""):
         self.boxes += 1
@@ -115,6 +128,15 @@ class _Reader:
             raw = handle.read(8)
             extended = handle.read(8) if len(raw) == 8 and raw[:4] == b"\0\0\0\1" else b""
             kind, header, end = self.header(raw, pos, size, extended)
+            self.has_size_zero |= raw[:4] == b"\0\0\0\0"
+            if kind == b"uuid":
+                handle.seek(pos + header - 16)
+                if handle.read(16) == PROVENANCE_UUID:
+                    if self.original_creation is not None:
+                        raise ValueError("duplicate creation-time provenance")
+                    if end - pos - header != 9:
+                        raise ValueError("invalid creation-time provenance")
+                    self.original_creation = _original_creation(handle.read(9))
             if kind == b"moof":
                 raise ValueError("fragmented MP4 is not supported")
             if kind == b"mdat":
@@ -124,6 +146,7 @@ class _Reader:
                     raise ValueError("duplicate moov box")
                 if end - pos > MAX_METADATA:
                     raise ValueError("metadata limit exceeded")
+                self.moov_offset = pos + header
                 handle.seek(pos + header)
                 moov = handle.read(end - pos - header)
                 if len(moov) != end - pos - header:
@@ -336,6 +359,8 @@ def _read(handle, sample_format):
     movie_scale, movie_duration = _clock(movies[0])
     version = _version(movies[0], (0, 1))
     created, = _unpack(">Q" if version else ">I", movies[0], 4)
+    if reader.original_creation is not None:
+        created = reader.original_creation
     tracks = [body for kind, body in children if kind == b"trak"]
     if len(tracks) > MAX_TRACKS:
         raise ValueError("track count limit exceeded")

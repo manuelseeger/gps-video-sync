@@ -36,6 +36,22 @@ Each recording gets a result in `sync.json`. `ok` means it has an alignment.
 `ambiguous` means there is not enough reliable evidence. `failed` means the
 recording could not be processed. Other recordings still get their results.
 
+By default, `sync` does not change your recordings. To store accepted UTC start
+dates in the MP4 headers, preview the changes, then apply them:
+
+```sh
+gps-video-sync sync takeoff.MP4 ridge.MP4 landing.MP4 --track flight.igc --in-place --dry-run
+gps-video-sync sync takeoff.MP4 ridge.MP4 landing.MP4 --track flight.igc --in-place
+```
+
+This changes creation dates, not playback speed or media. Dates round to the
+nearest whole second, with half seconds rounded toward the later second.
+Ambiguous and failed alignments stay untouched. The command supports direct
+local MP4 files with the default `gopro` source, not NPZ inputs, symlinks, or
+hard-linked files. Each file update is atomic and creates no backup. The
+[reference](docs/reference.md#in-place-utc-dates) describes write reports and
+original camera-date preservation.
+
 Run `gps-video-sync sync --help` for more options.
 Results contain file paths and recording dates. Remove private data before sharing.
 
@@ -186,6 +202,10 @@ gps-video-sync verify ridge.MP4 --track flight.igc --result sync.json --output r
 
 Plot output requires the `verify` extra. Install it with
 `uv tool install 'gps-video-sync[verify]'`.
+
+Run `uv run python scripts/check_in_place.py` to check UTC date updates on
+temporary copies of the bundled clips. It checks header dates, unchanged media
+and telemetry, original camera evidence, and repeat runs.
 
 ## License
 
