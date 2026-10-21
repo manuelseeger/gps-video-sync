@@ -252,5 +252,5 @@ def test_chain_serial_conflict_cannot_hide_behind_missing_serial(chapters):
     recordings[0].clock = replace(recordings[0].clock, camera="one")
     recordings[2].clock = replace(recordings[2].clock, camera="two")
     shots = find_shots(recordings)
-    assert [s.status for s in shots] == ["ambiguous"] * 3
-    assert [s.members for s in shots] == [(0,), (1,), (2,)]
+    assert [s.status for s in shots] == ["ambiguous"]
+    assert [s.members for s in shots] == [(0, 1, 2)]

@@ -208,6 +208,7 @@ class ShotCandidate:
     index: int
     start_seconds: float
     reason: str
+    session_block: SessionVerdict | None = None
 
 
 @dataclass
@@ -262,8 +263,10 @@ class SyncResult:
             return {"status": "joined", "members": list(source.members), "index": source.index,
                     "start_seconds": source.start_seconds, "reason": "", "diagnostics_coordinates": "shot"}
         if self.shot_candidate:
-            return {"status": "ambiguous", **asdict(self.shot_candidate),
-                    "members": list(self.shot_candidate.members)}
+            candidate = self.shot_candidate
+            return {"status": "ambiguous", "members": list(candidate.members),
+                    "index": candidate.index, "start_seconds": candidate.start_seconds,
+                    "reason": candidate.reason}
         return {"status": "single"}
 
     @property

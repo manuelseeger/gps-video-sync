@@ -330,7 +330,12 @@ def test_sync_result_retains_local_timeline(local_timelines, tmp_path, case, sta
     archive = tmp_path / "timeline.npz"
     _export(telemetry, archive)
     batch = match_videos(track, [archive], source="npz")[0]
-    assert batch.to_dict() == dict(result.to_dict(), input_file=str(archive))
+    expected = dict(result.to_dict(), input_file=str(archive))
+    if status == "ambiguous":
+        expected.update(session={"verdict": "insufficient", "reason": "no_camera_start",
+                                 "message": "No camera start time and recording clock"},
+                        message=result.message + "; session No camera start time and recording clock")
+    assert batch.to_dict() == expected
 
 
 @pytest.mark.parametrize("bounds", [(0, 120), (40, 120), (20, 110)])
