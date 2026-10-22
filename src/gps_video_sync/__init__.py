@@ -2,6 +2,9 @@ from .models import Track, Telemetry, SyncResult, RecordingClock, Failed
 from .plugins import (TrackReader, VideoSource, register_track, register_video,
                       read_track, read_video)
 from .igc import IGCReader
+from .identity import (IDENTITY_CONTRACT, IdentityResult, RecordingIdentity,
+                       IdentityUnavailable, IdentityFailed, read_recording_identity,
+                       compare_identity, identity_from_dict)
 
 __version__ = "1.1.0"
 register_track("igc", IGCReader())

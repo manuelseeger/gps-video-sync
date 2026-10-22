@@ -21,6 +21,20 @@ _SINGLETONS = {
 }
 
 
+class LimitExceeded(ValueError):
+    """A parser resource bound prevented extraction."""
+
+
+class Span(NamedTuple):
+    offset: int
+    size: int
+
+
+class Header(NamedTuple):
+    created_seconds: int | None
+    telemetry: tuple[Span | None, ...]
+
+
 class Sample(NamedTuple):
     time: float
     duration: float
@@ -75,7 +89,7 @@ class _Reader:
     def header(self, raw, start, end, extended=b""):
         self.boxes += 1
         if self.boxes > MAX_BOXES:
-            raise ValueError("box count limit exceeded")
+            raise LimitExceeded("box count limit exceeded")
         size, kind = _unpack(">I4s", raw)
         header = 8
         if size == 1:
@@ -123,7 +137,7 @@ class _Reader:
                 if moov is not None:
                     raise ValueError("duplicate moov box")
                 if end - pos > MAX_METADATA:
-                    raise ValueError("metadata limit exceeded")
+                    raise LimitExceeded("metadata limit exceeded")
                 handle.seek(pos + header)
                 moov = handle.read(end - pos - header)
                 if len(moov) != end - pos - header:
@@ -157,7 +171,7 @@ def _table(data, fmt, versions=(0,)):
     if len(data) != 8 + count * width:
         raise ValueError("truncated or inconsistent table length")
     if count > MAX_SAMPLES:
-        raise ValueError("table entry limit exceeded")
+        raise LimitExceeded("table entry limit exceeded")
     return struct.iter_unpack(fmt, data[8:])
 
 
@@ -167,7 +181,7 @@ def _edit(data):
     version = _version(data, (0, 1))
     count, = _unpack(">I", data, 4)
     if count > MAX_EDITS:
-        raise ValueError("edit count limit exceeded")
+        raise LimitExceeded("edit count limit exceeded")
     entries = _table(data, ">Qqhh" if version else ">Iihh", (0, 1))
     delay, selected = 0, None
     for segment, media, rate, fraction in entries:
@@ -211,7 +225,7 @@ def _sizes(boxes):
     if len(body) != expected:
         raise ValueError("truncated sample size table")
     if count > MAX_SAMPLES:
-        raise ValueError("sample count limit exceeded")
+        raise LimitExceeded("sample count limit exceeded")
     return count, fixed, width, body
 
 
@@ -338,7 +352,7 @@ def _read(handle, sample_format):
     created, = _unpack(">Q" if version else ">I", movies[0], 4)
     tracks = [body for kind, body in children if kind == b"trak"]
     if len(tracks) > MAX_TRACKS:
-        raise ValueError("track count limit exceeded")
+        raise LimitExceeded("track count limit exceeded")
     video, selected, sample_count = None, [], 0
     for body in tracks:
         boxes = reader.mapping(body)
@@ -357,7 +371,7 @@ def _read(handle, sample_format):
         track = _track(reader, mdia, stbl, descriptions, _edit(edits.get(b"elst")), minf)
         sample_count += track.sizes[0]
         if sample_count > MAX_SAMPLES:
-            raise ValueError("sample count limit exceeded")
+            raise LimitExceeded("sample count limit exceeded")
         used = {descriptions[desc - 1][0] for _, _, desc in track.stsc}
         if requested and used and used != {sample_format}:
             raise ValueError("unsupported mixed sample descriptions")
@@ -376,7 +390,7 @@ def _read(handle, sample_format):
         raise ValueError("cannot determine video duration")
     origin = Fraction(0) if edit.segment is not None else Fraction(first, video.scale)
     if sum(t.sizes[0] for t in selected) > MAX_OUTPUT:
-        raise ValueError("output sample limit exceeded")
+        raise LimitExceeded("output sample limit exceeded")
     samples = []
     for track in selected:
         edit = track.edit
@@ -385,7 +399,7 @@ def _read(handle, sample_format):
             raise ValueError("unsupported differing edit visibility")
         for pts, delta, pos, size in _raw_samples(track, media):
             if size > MAX_PAYLOAD:
-                raise ValueError("sample payload limit exceeded")
+                raise LimitExceeded("sample payload limit exceeded")
             time = delay + Fraction(pts - edit.media_time, track.scale)
             if edit.segment is not None:
                 if time + Fraction(delta, track.scale) <= delay:
@@ -396,11 +410,60 @@ def _read(handle, sample_format):
     return Timeline(float(duration), tuple(sorted(samples, key=lambda s: s.time)), created or None)
 
 
+def read_header(handle) -> Header:
+    """Read creation and first decode-order gpmd spans from an open binary file.
+
+    Empty telemetry tracks have a None span. Video timing and edits are ignored.
+    """
+    reader = _Reader()
+    moov, media = reader.file(handle)
+    children = list(reader.children(moov))
+    if any(kind == b"mvex" for kind, _ in children):
+        raise ValueError("fragmented MP4 is not supported")
+    movies = [body for kind, body in children if kind == b"mvhd"]
+    if len(movies) != 1:
+        raise ValueError("expected one mvhd box")
+    version = _version(movies[0], (0, 1))
+    _unpack(">QQIQ" if version else ">IIII", movies[0], 4)
+    created, = _unpack(">Q" if version else ">I", movies[0], 4)
+    if created in (0, (1 << (64 if version else 32)) - 1):
+        created = None
+    tracks = [body for kind, body in children if kind == b"trak"]
+    if len(tracks) > MAX_TRACKS:
+        raise LimitExceeded("track count limit exceeded")
+    spans = []
+    for body in tracks:
+        boxes = reader.mapping(body)
+        mdia = reader.mapping(_required(boxes, b"mdia"))
+        minf = reader.mapping(_required(mdia, b"minf"))
+        stbl = reader.mapping(_required(minf, b"stbl"))
+        descriptions = _descriptions(reader, _required(stbl, b"stsd"))
+        if not any(kind == b"gpmd" for kind, _ in descriptions):
+            continue
+        track = _track(reader, mdia, stbl, descriptions, _Edit(), minf)
+        used = {descriptions[desc - 1][0] for _, _, desc in track.stsc}
+        if used and used != {b"gpmd"}:
+            raise ValueError("unsupported mixed sample descriptions")
+        if not track.sizes[0]:
+            spans.append(None)
+            continue
+        size = _size(track.sizes, 0)
+        if size > MAX_PAYLOAD:
+            raise LimitExceeded("sample payload limit exceeded")
+        pos = track.chunks[0]
+        if size <= 0 or not any(start <= pos and pos + size <= end for start, end in media):
+            raise ValueError("sample outside mdat payload")
+        spans.append(Span(pos, size))
+    return Header(created, tuple(spans))
+
+
 def read_timeline(path: str | Path, sample_format: str = "gpmd") -> Timeline:
     """Read sample times and byte spans relative to the first video timeline."""
     path = Path(path)
     try:
         with path.open("rb") as handle:
             return _read(handle, sample_format.encode("ascii"))
+    except LimitExceeded as exc:
+        raise LimitExceeded(f"{path.name}: {exc}") from exc
     except ValueError as exc:
         raise ValueError(f"{path.name}: {exc}") from exc
