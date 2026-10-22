@@ -1,5 +1,227 @@
 # API and format reference
 
+## Recording identity
+
+`read_recording_identity(path)` returns immutable per-file recording evidence.
+It accepts a text path or `os.PathLike[str]`. Invalid path types raise `TypeError`.
+An embedded null character in the path raises `ValueError`.
+Media and I/O problems return a typed failure. This API is independent of
+`read_video`, synchronization, and resampling.
+
+| Result | Public fields | Meaning |
+| --- | --- | --- |
+| `RecordingIdentity` | `key`, `contract` | Sufficient supported evidence. The key is a lowercase SHA-256 hex string. |
+| `IdentityUnavailable` | `reason`, `contract` | Readable media without sufficient supported evidence. |
+| `IdentityFailed` | `code`, `contract` | Extraction could not determine whether evidence exists. The consumer can retry. |
+
+`IdentityResult` is the union of these types. Only `RecordingIdentity` has a key.
+Results contain no paths, raw serials, coordinates, creation times, or telemetry.
+Failure codes contain no exception text.
+
+### Comparison and persistence
+
+`IDENTITY_CONTRACT` is `gopro-recording-identity/1.0.0`.
+`compare_identity(a, b)` returns one of these strings:
+
+- `same` means both results are available under this exact supported contract
+  and their keys match.
+- `different` means both results are available under this exact supported
+  contract and their keys differ.
+- `incomparable` means either result lacks evidence or uses any other contract.
+
+Direct result equality uses the same rule for `same`. An unavailable, failed,
+or unsupported-contract result never equals another result, including itself.
+The result types are not hashable. Use `compare_identity` for identity decisions.
+
+Every result has `to_dict()`. `identity_from_dict(value)` validates a stored
+dictionary and returns the corresponding result. Missing or extra fields,
+invalid keys, invalid contract syntax, and unknown reason or code strings raise
+`ValueError`. The stored forms are:
+
+```json
+{"state": "available", "contract": "gopro-recording-identity/1.0.0", "key": "6325f85402d4590a91d89ed1c177fcde8ff17fbf5d7fdd866d128e23bb4732b5"}
+```
+
+```json
+{"state": "unavailable", "contract": "gopro-recording-identity/1.0.0", "reason": "no_telemetry"}
+```
+
+```json
+{"state": "failed", "contract": "gopro-recording-identity/1.0.0", "code": "read_error"}
+```
+
+The available example is the synthetic golden test key. Store the full contract,
+not only the key. The parser preserves syntactically valid unsupported versions
+when their result fields are valid. Comparison still returns `incomparable`.
+A change to evidence policy or canonical encoding requires a new contract.
+Even a patch-version difference is not silently comparable. Re-extract when the
+stored contract differs from `IDENTITY_CONTRACT`.
+
+```python
+import json
+from gps_video_sync import IDENTITY_CONTRACT, identity_from_dict, read_recording_identity
+
+result = read_recording_identity("recording.MP4")
+stored_json = json.dumps(result.to_dict())
+restored = identity_from_dict(json.loads(stored_json))
+needs_refresh = restored.contract != IDENTITY_CONTRACT
+```
+
+A source-file fingerprint and a recording identity have separate purposes.
+The application owns file fingerprints, persistence, retries, and database
+updates. File size and modification time can detect some source changes but do
+not establish recording identity. Two duplicate originals can have the same
+key. Candidate selection, pair uniqueness, playback compatibility, and duration
+tolerance remain application decisions. Identity does not join chapters or
+establish UTC alignment.
+
+### Supported evidence in version 1.0.0
+
+The extractor requires all of these conditions:
+
+1. The container has exactly one `gpmd` track with at least one sample.
+2. `mvhd` has a positive creation integer. Zero and the all-ones sentinel of
+   its native width mean missing context.
+3. The first packet in native decode order has exactly one ACCL stream and
+   exactly one GYRO stream.
+4. Each motion record has three signed integer axes with GPMF type `s` or `l`.
+   Each stream contains at least two distinct native row values. Constant
+   rows are insufficient.
+5. Each stream has one exact unsigned `STMP` and `TSMP` integer of type `B`,
+   `S`, `L`, or `J`. `TSMP` must be at least the row count. Values above
+   `2**53` retain their exact integer value.
+6. Present scale, axis, matrix, and unit metadata has a supported interpretation.
+   Duplicate selected fields are unsupported.
+
+`SCAL`, when present, contains one or three finite, nonzero numeric values.
+An absent scale means native units. `MTRX`, when present, contains nine finite
+numeric values. Both accept the simple numeric types supported by GPMF.
+`ORIN` and `ORIO` are character strings with one of each X, Y, and Z axis,
+in either case. `SIUN` and `UNIT` are nonempty printable character strings.
+They accept UTF-8 or native GoPro single-byte text. Native text permits printable
+ASCII and bytes `B0`, `B2`, `B3`, and `B5`, for example `m/s\xb2`.
+Trailing null characters are permitted. The original bytes enter the key unchanged.
+
+Creation time supplies context, not uniqueness. Exact varied native sensor rows
+and their absolute clocks and counters supply additional recording evidence.
+Adjacent chapters with continuing clocks have different native starts. This
+profile is conservative evidence, not a guarantee that evidence cannot collide
+or be copied. Byte-identical evidence intentionally matches.
+
+GPS, serial numbers, `MUID`, `GUMI`, `CDAT`, filenames, directories, video
+encoding, duration, synchronization bounds, and unrelated GPMF fields do not
+enter the key. Edits and presentation offsets do not select the first packet.
+No GPS fallback exists. A file without GPS or a serial can still have evidence.
+The first-packet contract does not certify later telemetry or media integrity.
+
+Canonical bytes use this exact order:
+
+1. The ASCII contract string followed by one null byte.
+2. Movie creation as one unsigned big-endian 64-bit integer.
+3. ACCL, then GYRO. For each sensor, append its four ASCII key bytes, its raw
+   record encoding, then `STMP` and `TSMP` as unsigned big-endian 64-bit integers.
+4. Within each sensor, append metadata in this fixed order: `SCAL`, `ORIN`,
+   `ORIO`, `MTRX`, `SIUN`, `UNIT`. Each field starts with a zero byte for absence
+   or a one byte followed by its raw record encoding for presence.
+
+A raw record encoding is its one-byte type, one-byte row size, unsigned
+big-endian 16-bit repeat count, and exactly `size * count` data bytes.
+It excludes padding and the record key. Motion keys are explicit. Optional
+metadata keys have fixed positions. These lengths and presence tags make the
+encoding unambiguous. SHA-256 of these bytes produces `key`.
+
+Counters and movie creation normalize to exact unsigned 64-bit values. Motion
+rows and optional metadata retain their native type, size, count, and bytes.
+A changed anchor, first packet, row encoding, or metadata presence can cause a
+missed match even when the files depict the same recording. Remuxed or stripped
+files can become unavailable. No fuzzy comparison or rational normalization runs.
+
+### Unavailable reasons and failure codes
+
+| Unavailable reason | Meaning |
+| --- | --- |
+| `no_telemetry` | No `gpmd` track, or its sample table is empty. |
+| `no_recording_context` | Movie creation is absent or a sentinel. |
+| `no_motion` | The first packet lacks ACCL or GYRO. |
+| `unsupported_layout` | Multiple telemetry tracks, ambiguous motion fields, or unsupported motion or interpretation metadata. |
+| `missing_native_counters` | Missing or unsupported STMP or TSMP, or TSMP below the row count. |
+| `insufficient_sensor_witness` | A required sensor has no varied native rows. |
+
+When several conditions fail, the reported reason is not a complete inventory.
+
+| Failure code | Meaning |
+| --- | --- |
+| `read_error` | Opening, reading, or inspecting the source failed with an I/O error. |
+| `malformed_container` | Container framing or required tables are invalid, a first sample is outside `mdat`, or the container layout cannot be interpreted. |
+| `malformed_telemetry` | First-packet GPMF framing or numeric payload is invalid. |
+| `limit_exceeded` | A parser resource bound prevented extraction. This does not mean evidence is absent. |
+| `source_changed` | File metadata on the open descriptor changed during extraction. |
+
+Fragmented MP4 and external sample data references return `malformed_container`.
+No video track is required. A valid video duration is not required. Required
+telemetry sample tables must still be structurally valid.
+
+### Privacy, cost, and coverage
+
+The API opens one read-only file handle. It reads top-level box headers, the
+`moov` metadata, and the first telemetry payload. It seeks past video data and
+decodes no video. Work depends on metadata and table size, not video byte size.
+It inspects the same descriptor before and after extraction to detect ordinary
+concurrent changes. This check is not a transactional snapshot or full-file
+integrity check.
+
+Current parser limits are 64 MiB for `moov`, 16 MiB for the first payload,
+100,000 visited boxes, 128 tracks, 10,000,000 samples or entries per table, and
+GPMF container depth 8. These are input bounds, not a total process-memory bound.
+Table validation can allocate additional Python objects. A resource limit is
+always a failure, never unavailable evidence.
+
+Identity extraction reads no cache and writes no files. It retains no telemetry
+or source paths in results. It has no `hz` or cache setting. Repeated unchanged
+input has the same comparable evidence under the same contract on supported
+platforms. Cold or warm synchronization caches and resampling frequency cannot
+change the identity. `read_video` retains its separate default cache behavior,
+which can persist telemetry and paths. Use `read_recording_identity` alone for
+private no-cache extraction.
+
+A key is linkable. Anyone with a candidate file can compute its key and perform
+a known-input lookup. The digest is not anonymization or proof of authenticity.
+
+GoPro HERO11 Black with firmware H22.01.02.32.00 has verified MP4 and LRV
+matches and distinct adjacent chapters. The verified pairs include no-GPS and
+no-serial first packets. Other cameras and firmware are not verified.
+Synthetic actual-MP4 tests cover GPS and no-GPS duration differences at
+30.0167 and 30.05 seconds,
+chapters, duplicate originals, optional metadata, exact large counters, errors,
+resource bounds, persistence, privacy, and cache independence.
+
+### Check private recording pairs
+
+From a repository checkout, supply explicit positive pairs with arbitrary
+filenames. Supply expected different recordings or chapters with `--different`.
+Both options are repeatable.
+
+```sh
+uv run python scripts/check_recording_identity.py \
+    --pair /media/original.MP4 /media/preview.LRV \
+    --different /media/first-chapter.LRV /media/second-chapter.LRV
+```
+
+Add `--gopro-folder /media/camera` for an optional direct-folder survey.
+The survey uses GoPro filenames only to select candidate positive pairs,
+chapter negatives, and cross-recording negatives. Those filename expectations
+are hints, not identity evidence. Verify that the folder has no renamed
+cross-recording duplicates before you use these expectations as a test oracle.
+
+The script prints aggregate JSON counts only. It prints no paths, keys, raw
+fields, serials, or coordinates. It checks repeated reads, persistence,
+unchanged source metadata, and renamed and moved symbolic-link aliases.
+Temporary aliases need no video copies and are removed after the check.
+Exit code 0 means every expectation passed. Code 1 means a comparison or check
+failed. Code 2 means invalid arguments or an input or check error. An unavailable
+expected positive never passes. An unavailable expected negative also fails.
+A survey folder with no positive filename hints returns code 2.
+
 ## Data contracts
 
 `read_track(path, *, format="igc", altitude="auto")` returns a `Track`.

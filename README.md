@@ -71,6 +71,43 @@ The result maps video seconds to UTC seconds from midnight of the track date:
 utc_seconds = video_seconds * clockRate + offset_seconds
 ```
 
+## Compare MP4 and LRV recording evidence
+
+Use `read_recording_identity` to compare one recording with a preview, including
+renamed files. This read-only API has no cache and retains no telemetry or paths.
+
+```python
+from gps_video_sync import (
+    IdentityFailed, IdentityUnavailable, RecordingIdentity,
+    compare_identity, read_recording_identity,
+)
+
+result = read_recording_identity("recording.MP4")
+match result:
+    case RecordingIdentity():
+        preview = read_recording_identity("preview.LRV")
+        verdict = compare_identity(result, preview)
+        stored = result.to_dict()
+    case IdentityUnavailable(reason=reason):
+        print("No supported recording evidence", reason)
+    case IdentityFailed(code=code):
+        print("Extraction failed; retry or inspect the source", code)
+```
+
+`compare_identity` returns `same`, `different`, or `incomparable`. A match means
+matching extracted evidence under the exact supported contract. It does not
+prove provenance. The key is linkable and is not an anonymization guarantee.
+
+Contract `gopro-recording-identity/1.0.0` requires a positive movie creation time
+and varied native ACCL and GYRO data with exact sensor clocks and counters.
+GPS and a camera serial number are not required. Duration, synchronization
+bounds, filenames, and resampling settings do not affect identity.
+
+The application chooses candidates and checks playback compatibility, duration
+tolerance, and uniqueness. Duplicate originals can have equal identity evidence.
+See [Recording identity](docs/reference.md#recording-identity) for persistence,
+limits, privacy, and the opt-in private-media check.
+
 ## Supported cameras
 
 The bundled test recordings are from a GoPro HERO11 Black. They test motion

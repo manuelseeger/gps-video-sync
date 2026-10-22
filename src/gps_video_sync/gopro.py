@@ -9,14 +9,13 @@ import os
 from pathlib import Path
 import tempfile
 from dataclasses import dataclass, asdict
-import struct
 import zipfile
 
 import numpy as np
 from scipy.ndimage import uniform_filter1d
 
 from . import mp4
-from .gpmf import number, records, scaled, streams, MAX_DEPTH
+from .gpmf import integer, number, records, scaled, streams, MAX_DEPTH
 from .models import CameraStart, Telemetry, RecordingClock
 from .sync import validate_telemetry
 
@@ -73,15 +72,6 @@ def _camera_start(created_seconds: int | None, clock: RecordingClock | None) -> 
     if created_seconds is None or clock is None:
         return None
     return CameraStart(created_seconds + clock.origin_seconds, 1. + clock.reach_seconds, clock.camera)
-
-
-def _counter(record) -> int:
-    formats = {"B": ">B", "S": ">H", "L": ">I", "J": ">Q"}
-    fmt = formats.get(record.typ)
-    if (fmt is None or record.count != 1 or record.size != struct.calcsize(fmt)
-            or len(record.data) != record.size):
-        raise ValueError("Unsupported sensor clock or sample counter")
-    return struct.unpack(fmt, record.data)[0]
 
 
 def _serials(buf: bytes, depth: int = 0) -> set[str]:
@@ -157,8 +147,8 @@ def _recording(path: Path) -> Recording:
                     if key not in fields:
                         continue
                     try:
-                        observation = (pts, _counter(fields["STMP"]), fields[key].count,
-                                       _counter(fields["TSMP"]))
+                        observation = (pts, integer(fields["STMP"]), fields[key].count,
+                                       integer(fields["TSMP"]))
                     except (KeyError, ValueError):
                         observation = None
                     observations[key].append(observation)

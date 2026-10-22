@@ -146,8 +146,9 @@ def test_api_version_must_match(archives):
         release.check(write())
 
 
-def test_source_must_match_wheel(archives):
+@pytest.mark.parametrize("module", ["cli.py", "identity.py"])
+def test_source_must_match_wheel(archives, module):
     _, source, write = archives
-    source["src/gps_video_sync/cli.py"] = b"# different\n"
+    source[f"src/gps_video_sync/{module}"] = b"different\n"
     with pytest.raises(ValueError, match="Source and wheel differ"):
         release.check(write())

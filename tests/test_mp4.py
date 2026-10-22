@@ -14,6 +14,14 @@ def read(tmp_path, tracks=None, **kwargs):
     return mp4.read_timeline(path)
 
 
+def test_timeline_limit_error_keeps_source_name(tmp_path, monkeypatch):
+    path = tmp_path / "source.mp4"
+    path.write_bytes(build([video(), Track()]))
+    monkeypatch.setattr(mp4, "MAX_TRACKS", 0)
+    with pytest.raises(mp4.LimitExceeded, match=r"^source\.mp4: track count limit exceeded$"):
+        mp4.read_timeline(path)
+
+
 def test_timeline_and_chunk_runs(tmp_path):
     result = read(tmp_path, [video(deltas=[2000]),
                             Track(deltas=[1001] * 5, payloads=[b"abc", b"12345", b"ab", b"1234", b"123456"],

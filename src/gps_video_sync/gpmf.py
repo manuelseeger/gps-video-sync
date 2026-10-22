@@ -25,6 +25,20 @@ DTYPES = {
 MAX_DEPTH = 8
 
 
+class LimitExceeded(ValueError):
+    """A GPMF parser resource bound prevented extraction."""
+
+
+def integer(record: Record) -> int:
+    """Read one exact unsigned native integer without float conversion."""
+    formats = {"B": ">B", "S": ">H", "L": ">I", "J": ">Q"}
+    fmt = formats.get(record.typ)
+    if (fmt is None or record.count != 1 or record.size != struct.calcsize(fmt)
+            or len(record.data) != record.size):
+        raise ValueError("Unsupported sensor clock or sample counter")
+    return struct.unpack(fmt, record.data)[0]
+
+
 def records(buf: bytes) -> Iterator[Record]:
     for record in _records(memoryview(buf)):
         yield record._replace(data=bytes(record.data))
@@ -53,7 +67,7 @@ def streams(buf: bytes, _depth: int = 0) -> Iterator[list[Record]]:
     """Yield STRM records. Nesting is limited to MAX_DEPTH containers, and
     payload bytes are not copied between levels, so work is linear in size."""
     if _depth > MAX_DEPTH:
-        raise ValueError("GPMF container nesting is too deep")
+        raise LimitExceeded("GPMF container nesting is too deep")
     view = buf if isinstance(buf, memoryview) else memoryview(buf)
     for record in _records(view):
         if record.key == "STRM":
