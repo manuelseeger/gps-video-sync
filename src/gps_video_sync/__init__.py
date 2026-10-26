@@ -6,7 +6,7 @@ from .identity import (IDENTITY_CONTRACT, IdentityResult, RecordingIdentity,
                        IdentityUnavailable, IdentityFailed, read_recording_identity,
                        compare_identity, identity_from_dict)
 
-__version__ = "1.2.0"
+__version__ = "1.3.0"
 register_track("igc", IGCReader())
 from .gopro import GoProSource
 register_video("gopro", GoProSource())
