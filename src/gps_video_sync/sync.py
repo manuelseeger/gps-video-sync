@@ -1,5 +1,4 @@
 from __future__ import annotations
-from datetime import datetime, timezone, timedelta
 from numbers import Real
 import numpy as np
 from scipy.ndimage import gaussian_filter1d as gf
@@ -7,98 +6,8 @@ from scipy.signal import correlate, correlation_lags
 from scipy.stats import linregress, theilslopes
 from dataclasses import replace
 from .models import (Track, Telemetry, SyncResult, Accepted, Ambiguous, Failed,
-                     TimeMapping, OwnGps, OwnMotion)
-
-
-MIN_GPS_SPAN_SECONDS = 10.
-MAX_GPS_RATE_ERROR = 2e-3
-MAX_GPS_UNCERTAINTY_SECONDS = 2.
-MAX_UNIX_SECONDS = 253370764800.
-GPS_STEP_SECONDS = .1
-
-
-GPS_STEP_WINDOWS = (3, 5, 10, 20, 30)
-GPS_STEP_NOISE_CAP = .15
-GPS_GAP_SECONDS = 2.
-
-
-def _gps_step(time, delta):
-    """True when the clock offset changes abruptly between adjacent runs.
-
-    The offsets are detrended with the rate between the medians of the first
-    and last thirds. For each window size in GPS_STEP_WINDOWS up to n/2 and
-    each split, the median of the window before the split is compared with the
-    median of the window after it. Near the ends a window shrinks to the
-    available observations, down to one.
-
-    Noise within +-GPS_STEP_SECONDS/2 changes a median by at most
-    GPS_STEP_SECONDS/2. The detrending rate error is then at most
-    (GPS_STEP_SECONDS + |rate| * time range of both thirds) / span. Over the
-    time extent of a window pair, the rate error adds at most that rate error
-    times the extent. A difference greater than GPS_STEP_SECONDS plus this
-    allowance is therefore not caused by such noise. The threshold is also at
-    least six standard errors of the white noise between adjacent observations,
-    capped at GPS_STEP_NOISE_CAP, so that noisier data needs more evidence but
-    a step of 3 * GPS_STEP_SECONDS stays detectable.
-    """
-    order = np.argsort(time, kind="stable")
-    time, delta = time[order], delta[order]
-    n = len(time)
-    if n < 2:
-        return False
-    third = max(1, n//3)
-    span = float(np.median(time[-third:])-np.median(time[:third]))
-    if span <= 0:
-        return False
-    rate = (np.median(delta[-third:])-np.median(delta[:third]))/span
-    level = delta-rate*time
-    ranges = float(np.ptp(time[:third])+np.ptp(time[-third:]))
-    rate_error = (GPS_STEP_SECONDS+abs(rate)*ranges)/span
-    noise = 1.4826*float(np.median(abs(np.diff(level))))/np.sqrt(2)
-
-    def stepped(before, after, size_before, size_after, extent):
-        error = min(GPS_STEP_NOISE_CAP, 6*1.25*noise*np.sqrt(1/size_before+1/size_after))
-        return np.any(abs(after-before)-rate_error*extent > max(GPS_STEP_SECONDS, error))
-
-    for window in [w for w in GPS_STEP_WINDOWS if w <= n//2] or [1]:
-        if n >= 2*window:
-            medians = np.median(np.lib.stride_tricks.sliding_window_view(level, window), axis=1)
-            extent = time[2*window-1:]-time[:n-2*window+1]
-            if stepped(medians[:-window], medians[window:], window, window, extent):
-                return True
-        for split in range(1, n):
-            if window <= split <= n-window:
-                continue
-            lo, hi = max(0, split-window), min(n, split+window)
-            if stepped(np.median(level[lo:split]), np.median(level[split:hi]),
-                       split-lo, hi-split, float(time[hi-1]-time[lo])):
-                return True
-    return False
-
-
-def _within_run_rate(time, utc):
-    """Rate of UTC against video time inside runs separated by gaps.
-
-    A gap is longer than GPS_GAP_SECONDS and five median sample intervals.
-    Each run has its own offset, so a step at a gap does not change the rate.
-    Returns the rate, its bound for noise within +-GPS_STEP_SECONDS/2, its
-    standard error, and the run index of each observation.
-    """
-    steps = np.diff(time)
-    gap = max(GPS_GAP_SECONDS, 5*float(np.median(steps)))
-    run = np.r_[0, np.cumsum(steps > gap)]
-    counts = np.bincount(run)
-    centered_time = time-(np.bincount(run, time)/counts)[run]
-    centered_utc = utc-(np.bincount(run, utc)/counts)[run]
-    weight = float(np.sum(centered_time**2))
-    if weight <= 0:
-        return 1., np.inf, np.inf, run
-    rate = float(np.sum(centered_time*centered_utc))/weight
-    residual = centered_utc-rate*centered_time
-    freedom = max(1, len(time)-len(counts)-1)
-    stderr = float(np.sqrt(np.sum(residual**2)/freedom/weight))
-    bound = GPS_STEP_SECONDS/2*float(np.sum(abs(centered_time)))/weight
-    return rate, bound, stderr, run
+                     TimeMapping, OwnMotion, GpsTimingPolicy, GpsEvaluation)
+from .gps_timing import evaluate_gps, rejection_message
 
 
 def _grid(time, values, grid, max_gap=None):
@@ -358,116 +267,42 @@ def validate_telemetry(telemetry: Telemetry) -> None:
         raise ValueError("GPS video and UTC times must be matching 1-D arrays")
 
 
-def synchronize(track: Track, telemetry: Telemetry) -> SyncResult:
+def synchronize(track: Track, telemetry: Telemetry, *,
+                gps_policy: GpsTimingPolicy = GpsTimingPolicy()) -> SyncResult:
+    if not isinstance(gps_policy, GpsTimingPolicy):
+        raise ValueError("gps_policy must be a GpsTimingPolicy")
     validate_track(track)
     validate_telemetry(telemetry)
-    return _synchronize(track, telemetry)
+    return _synchronize(track, telemetry, gps_policy=gps_policy)
 
 
-def _synchronize(track: Track, telemetry: Telemetry) -> SyncResult:
+def _synchronize(track: Track, telemetry: Telemetry, *,
+                 gps_policy: GpsTimingPolicy = GpsTimingPolicy()) -> SyncResult:
     timeline = dict(media_offset_seconds=telemetry.media_offset_seconds, duration=telemetry.duration)
     if len(telemetry.time) < 2:
         return SyncResult(Failed("No telemetry samples"), date=track.date,
+                          video=telemetry.video, gps=GpsEvaluation(policy=gps_policy), **timeline)
+    gps = evaluate_gps(track, telemetry, policy=gps_policy)
+    if gps.verdict == "accepted":
+        fit = gps.fit
+        return SyncResult(Accepted(fit.mapping), gps=gps, date=gps.origin_date,
+                          confidence={"gps_samples": gps.inlier_count,
+                                      "gps_inlier_fraction": gps.inlier_count/gps.finite_count,
+                                      "gps_span_seconds": gps.support_end_seconds-gps.support_start_seconds,
+                                      "residual_std_seconds": fit.envelope.residual_std_seconds},
+                          drift={"detected": fit.drift_detected, "clock_rate": fit.mapping.clock_rate,
+                                 "measured_clock_rate": fit.measured_clock_rate,
+                                 "seconds_per_hour": (fit.measured_clock_rate-1)*3600,
+                                 "stderr_seconds_per_hour": fit.rate_stderr*3600},
                           video=telemetry.video, **timeline)
-    origin_date = track.date
-    gps_rejection = ""
-    finite_gps = (np.isfinite(telemetry.gps_utc) & np.isfinite(telemetry.gps_time)
-                  & (telemetry.gps_utc >= 0) & (telemetry.gps_utc < MAX_UNIX_SECONDS))
-    if origin_date is None and finite_gps.sum() >= 3:
-        stamps = telemetry.gps_utc[finite_gps]
-        center_day = datetime.fromtimestamp(float(np.median(stamps)), timezone.utc).date()
-        candidates = [center_day+timedelta(days=i) for i in (-1, 0, 1)]
-        def overlap(day):
-            epoch = datetime.combine(day, datetime.min.time(), timezone.utc).timestamp()
-            return min(track.time[-1], stamps.max()-epoch)-max(track.time[0], stamps.min()-epoch)
-        origin_date = max(candidates, key=overlap)
-    if len(telemetry.gps_time) >= 3 and origin_date is not None:
-        midnight = datetime.combine(origin_date, datetime.min.time(), timezone.utc).timestamp()
-        delta = telemetry.gps_utc-midnight-telemetry.gps_time
-        valid = finite_gps & np.isfinite(delta)
-        stepped = _gps_step(telemetry.gps_time[valid], delta[valid])
-        if valid.sum() >= 3:
-            x, y = telemetry.gps_time[valid], delta[valid]
-            order = np.argsort(x)
-            third = max(1, len(x)//3)
-            lo, hi = order[:third], order[-third:]
-            # Prefer thirds of the time span, so that a gap does not mix them.
-            early, late = x <= x.min()+np.ptp(x)/3, x >= x.max()-np.ptp(x)/3
-            if early.sum() >= 3 and late.sum() >= 3:
-                lo, hi = np.flatnonzero(early), np.flatnonzero(late)
-            span = np.median(x[hi])-np.median(x[lo])
-            slope = (np.median(y[hi])-np.median(y[lo]))/span if span > 0 else 0.
-            intercept = np.median(y-slope*x)
-            residual = delta-intercept-slope*telemetry.gps_time
-            mad = np.median(abs(residual[valid]))
-            valid &= abs(residual) <= max(.5, 6*mad)
-        inlier_fraction = float(valid.sum()/max(1, finite_gps.sum()))
-        gt = telemetry.gps_time[valid]
-        gu = telemetry.gps_utc[valid]-midnight
-        order = np.argsort(gt, kind="stable")
-        gt, gu = gt[order], gu[order]
-        fit = linregress(gt, gu) if len(gt) >= 3 and np.ptp(gt) > 0 else None
-        if stepped:
-            gps_rejection = f"GPS UTC has a step of more than {GPS_STEP_SECONDS:g} s"
-        elif valid.sum() < 3 or inlier_fraction < .8:
-            gps_rejection = "GPS UTC observations are inconsistent"
-        elif np.ptp(gt) < MIN_GPS_SPAN_SECONDS:
-            gps_rejection = f"GPS UTC observations span less than {MIN_GPS_SPAN_SECONDS:g} s"
-        elif (np.any(np.diff(gt) <= 0) or gu[-1] <= gu[0]
-              or np.any(np.diff(gu) < -GPS_STEP_SECONDS)):
-            gps_rejection = "GPS UTC does not increase with video time"
-        elif fit is None or (abs(fit.slope-1) > MAX_GPS_RATE_ERROR + 3*fit.stderr
-                             + 2*GPS_STEP_SECONDS/float(np.ptp(gt))):
-            gps_rejection = "GPS UTC rate is outside the accepted camera clock range"
-        else:
-            residual = gu-(fit.intercept+fit.slope*gt)
-            scatter = float(np.std(residual))
-            overlap = min(track.time[-1], gu.max())-max(track.time[0], gu.min())
-            first = min(float(gt[0]), float(telemetry.time[0]))
-            last = max(float(gt[-1]), float(telemetry.time[-1]))
-            rate_error = abs(fit.slope-1)
-            detected = bool(rate_error > 3*fit.stderr and rate_error*(last-first) > .5)
-            within, within_bound, within_stderr, runs = _within_run_rate(gt, gu)
-            centered = gt-gt.mean()
-            global_bound = GPS_STEP_SECONDS/2*float(np.sum(abs(centered))/np.sum(centered**2))
-            rate_used = float(fit.slope) if detected else 1.
-            offset = float(fit.intercept) if detected else float(np.median(gu-gt))
-            # Error at the observation center plus the rate error, which the
-            # rate within GPS runs bounds, extrapolated to the video ends.
-            possible_rate_error = abs(rate_used-within)+within_bound+3*within_stderr
-            reach = GPS_STEP_SECONDS+possible_rate_error*max(abs(first-gt.mean()), abs(last-gt.mean()))
-            # Each run's own clock, at the within-run rate, must also be covered
-            # at both video ends. This covers a step at a gap.
-            run_rate_error = within_bound+3*within_stderr
-            for index in np.unique(runs):
-                run_time, run_utc = gt[runs == index], gu[runs == index]
-                level = float(np.median(run_utc-within*run_time))
-                for end in (first, last):
-                    reach = max(reach, abs(offset+rate_used*end-level-within*end) + GPS_STEP_SECONDS
-                                + run_rate_error*abs(end-float(run_time.mean())))
-            uncertainty = max(.5, scatter*3, reach)
-            if abs(fit.slope-within) > within_bound+global_bound+3*np.hypot(within_stderr, fit.stderr):
-                gps_rejection = f"GPS UTC has a step of more than {GPS_STEP_SECONDS:g} s at a gap"
-            elif scatter >= .5:
-                gps_rejection = "GPS UTC residuals exceed 0.5 s"
-            elif overlap < 0:
-                gps_rejection = "GPS UTC does not overlap the track"
-            elif uncertainty > MAX_GPS_UNCERTAINTY_SECONDS:
-                gps_rejection = "GPS UTC observations do not constrain the clock over the whole video"
-            else:
-                return SyncResult(Accepted(TimeMapping(offset, uncertainty, float(fit.slope) if detected else 1., OwnGps())), confidence={"gps_samples": int(valid.sum()), "gps_inlier_fraction": inlier_fraction, "gps_span_seconds": float(np.ptp(gt)), "residual_std_seconds": scatter},
-                                  drift={"detected": detected, "clock_rate": float(fit.slope) if detected else 1.,
-                                         "measured_clock_rate": float(fit.slope),
-                                         "seconds_per_hour": float((fit.slope-1)*3600),
-                                         "stderr_seconds_per_hour": float(fit.stderr*3600)},
-                                  video=telemetry.video, date=origin_date, **timeline)
-    elif len(telemetry.gps_time):
-        gps_rejection = "Too few GPS UTC observations or no track date"
+    gps_rejection = (rejection_message(gps) if gps.verdict == "rejected"
+                     or gps.reason_codes == ("date_unresolved",) else "")
     utc, t, tf, vf = build_features(track, telemetry)
     if len(utc) < 2 or len(t) < 2:
         result = SyncResult(Ambiguous("Track or video spans less than two whole seconds"))
     else:
         result = match_features(utc, t, tf, vf)
+    result.gps, result.motion_attempted = gps, True
     result.date, result.video = track.date, telemetry.video
     result.media_offset_seconds, result.duration = telemetry.media_offset_seconds, telemetry.duration
     if gps_rejection:

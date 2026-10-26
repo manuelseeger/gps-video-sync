@@ -128,7 +128,7 @@ def test_gps_step_and_failed_recording_are_not_promoted(track, tmp_path):
     assert results[2].offset_seconds is None
     assert results[2].to_dict()["session"]["verdict"] == "contradictory"
     assert results[2].to_dict()["session"]["recordings"] == [str(stepped)]
-    assert results[2].message == "GPS UTC has a step of more than 0.1 s; motion Insufficient varying, overlapping motion (minimum 90 s). A GPS UTC step blocks session placement"
+    assert results[2].message == "GPS UTC step detector triggered at 0.1 s; motion Insufficient varying, overlapping motion (minimum 90 s). A GPS UTC step blocks session placement"
     assert results[3].offset_seconds is None
     assert results[3].message == "No telemetry samples"
 
@@ -166,7 +166,7 @@ def test_unapproved_continuity_mapping_blocks_session_rescue(track, tmp_path):
     assert results[1].offset_seconds == pytest.approx(130.3)
     assert results[2].offset_seconds is None
     assert results[2].to_dict()["session"]["verdict"] == "contradictory"
-    assert results[2].message == "Insufficient varying, overlapping motion (minimum 90 s). Continuity candidate has no approved common mapping"
+    assert results[2].message == "Insufficient varying, overlapping motion (minimum 90 s). A GPS UTC step blocks session placement"
     assert results[2].shot["status"] == "ambiguous"
 
 

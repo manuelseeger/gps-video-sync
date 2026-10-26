@@ -54,7 +54,8 @@ def check_synthetic(work):
     paths = []
     for name, offset in (("first", 100), ("gap", 600), ("overlap", 150)):
         path = work / f"{name}.npz"
-        np.savez(path, time=time, gps_time=time, gps_utc=epoch + offset + time)
+        np.savez(path, time=time, gps_time=time, gps_utc=epoch + offset + time,
+                 recording=json.dumps(dict(duration=120., video=str(path), media_offset_seconds=0.)))
         paths.append(path)
     baseline = {r.video: r.to_dict() for r in match_videos(track, paths, source="npz")}
     assert [r["offset_seconds"] for r in baseline.values()] == [100, 600, 150]

@@ -71,6 +71,45 @@ The result maps video seconds to UTC seconds from midnight of the track date:
 utc_seconds = video_seconds * clockRate + offset_seconds
 ```
 
+## Select GPS timing tolerance
+
+Strict defaults reject detected GPS discontinuities. To permit a small
+discrepancy within a one-second whole-video error budget:
+
+```python
+from gps_video_sync import GpsTimingPolicy, synchronize
+
+policy = GpsTimingPolicy(
+	max_uncertainty_seconds=1.0,
+	allow_bounded_discontinuities=True,
+)
+result = synchronize(track, telemetry, gps_policy=policy)
+print(result.gps.verdict, result.gps.reason_codes)
+```
+
+Pass the same `gps_policy` to `match_videos` for batch and joined-shot solves.
+
+```sh
+gps-video-sync sync recording.MP4 --track flight.igc \
+	--gps-max-uncertainty-seconds 1 --gps-allow-bounded-discontinuities
+gps-video-sync verify recording.MP4 --track flight.igc --output check.png \
+	--gps-max-uncertainty-seconds 1 --gps-allow-bounded-discontinuities
+```
+
+The budget covers local time zero through the actual recording duration,
+including unsampled ends. Detection stays unchanged. A finite positive budget
+does not bypass hard guards, including the 0.5-second non-affine excursion
+ceiling and 0.5-second uncertainty floor. Missing duration rejects GPS.
+
+The estimate assumes common clock rate and bounded residual error. It is not
+a physical UTC guarantee. Rejected GPS falls back to motion, which can remain
+ambiguous. `result.gps` explains GPS. `result.to_dict()["selection"]` explains
+the final source and whether motion was attempted. Unsafe rejected GPS cannot
+support shot or session transfer. `verify --result` uses the saved decision
+and rejects explicit GPS policy flags.
+See [GPS timing policy](docs/reference.md#gps-timing-policy) for diagnostics,
+formulas, assumptions, and the timing-consistency analysis script.
+
 ## Compare MP4 and LRV recording evidence
 
 Use `read_recording_identity` to compare one recording with a preview, including
@@ -178,7 +217,8 @@ or confirmed continuous group needs enough varying motion. Repeated turns,
 data gaps, or low motion can produce ambiguous or false matches. Check the plot
 and distinctive events before you use an alignment. Short clips cannot establish
 clock stability. Session placement uses other accepted recordings to place such
-clips. A GPS UTC step blocks placement. A continuity candidate with no approved
+clips. Rejected unsafe GPS timing blocks placement and session anchors.
+Accepted bounded GPS discontinuities can be anchors. A continuity candidate with no approved
 common mapping cannot use session placement when it retains an accepted member.
 
 See the [API and format reference](https://github.com/manuelseeger/gps-video-sync/blob/main/docs/reference.md)

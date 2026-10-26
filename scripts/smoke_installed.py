@@ -33,7 +33,7 @@ time = np.arange(120, dtype=float)
 epoch = datetime(2026, 1, 1, tzinfo=timezone.utc).timestamp()
 track = Track(time + 3600, np.zeros(120), np.zeros(120), np.zeros(120),
               date=datetime(2026, 1, 1).date())
-telemetry = Telemetry(time, {}, gps_time=time, gps_utc=epoch + 3600 + time)
+telemetry = Telemetry(time, {}, duration=120., gps_time=time, gps_utc=epoch + 3600 + time)
 result = synchronize(track, telemetry)
 assert result.status == "ok" and abs(result.offset_seconds - 3600) < 0.01
 with tempfile.TemporaryDirectory() as temporary:
@@ -42,7 +42,8 @@ with tempfile.TemporaryDirectory() as temporary:
     igc.write_text("HFDTE010126\nB0100000000000N00000000EA0000000000\n"
                    "B0102000000000N00000000EA0000000000\n")
     path = root / "synthetic.npz"
-    np.savez(path, time=time, gps_time=time, gps_utc=epoch + 3600 + time)
+    np.savez(path, time=time, gps_time=time, gps_utc=epoch + 3600 + time,
+             recording=json.dumps(dict(video=str(path), duration=120., media_offset_seconds=0.)))
     output = json.loads(run("gps-video-sync", "sync", str(path), "--source", "npz",
                             "--track", str(igc)))
     assert output["schema_version"] == "3.0.0" and len(output["videos"]) == 1

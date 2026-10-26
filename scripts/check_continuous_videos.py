@@ -88,7 +88,8 @@ def check_synthetic(work):
         assert cli("sync", order, "--source", "npz", "--track", igc)["videos"] == wanted
     unrelated = work / "unrelated.npz"
     time = np.arange(120.)
-    np.savez(unrelated, time=time, gps_time=time, gps_utc=epoch + 2000 + time)
+    np.savez(unrelated, time=time, gps_time=time, gps_utc=epoch + 2000 + time,
+             recording=json.dumps(dict(duration=120., video=str(unrelated), media_offset_seconds=0.)))
     solo = match_videos(track, [unrelated], source="npz")[0]
     actual = match_videos(track, [*paths, unrelated], source="npz")
     assert actual[-1].to_dict() == solo.to_dict() and solo.offset_seconds == 2000

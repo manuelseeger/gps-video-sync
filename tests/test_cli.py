@@ -23,7 +23,7 @@ def sample(tmp_path):
 def fake_matcher(monkeypatch, status="ok"):
     monkeypatch.setattr(cli, "read_track", lambda *a, **kw: Track(
         np.arange(8), np.zeros(8), np.zeros(8), np.arange(8)))
-    def match(track, telemetry):
+    def match(track, telemetry, **kwargs):
         outcome = (Accepted(TimeMapping(3600, 2, 1, OwnMotion())) if status == "ok"
                    else Ambiguous("test result"))
         return SyncResult(outcome, video=telemetry.video,
@@ -173,7 +173,7 @@ def test_sync_stdout_and_real_gps_matcher(tmp_path):
     path = tmp_path / "gps.npz"
     gt = np.arange(20.)
     epoch = datetime(2026, 1, 1, tzinfo=timezone.utc).timestamp()
-    np.savez(path, time=gt, gps_time=gt, gps_utc=epoch+30010+gt)
+    cli._export(Telemetry(gt, {}, duration=20., gps_time=gt, gps_utc=epoch+30010+gt), path)
     proc = subprocess.run([sys.executable, "-m", "gps_video_sync", "sync", str(path),
                            "--source", "npz", "--track", str(track)], capture_output=True, text=True)
     assert proc.returncode == 0, proc.stderr
