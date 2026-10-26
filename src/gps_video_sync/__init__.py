@@ -1,4 +1,4 @@
-from .models import Track, Telemetry, SyncResult, RecordingClock, Failed
+from .models import Track, Telemetry, SyncResult, RecordingClock, Failed, GpsTimingPolicy, GpsEvaluation
 from .plugins import (TrackReader, VideoSource, register_track, register_video,
                       read_track, read_video)
 from .igc import IGCReader
@@ -13,13 +13,14 @@ register_video("gopro", GoProSource())
 from .npz import NPZSource
 register_video("npz", NPZSource())
 
-def synchronize(track: Track, telemetry: Telemetry) -> SyncResult:
+def synchronize(track: Track, telemetry: Telemetry, *,
+                gps_policy: GpsTimingPolicy = GpsTimingPolicy()) -> SyncResult:
     from .sync import synchronize as run
-    return run(track, telemetry)
+    return run(track, telemetry, gps_policy=gps_policy)
 
 
 def match_videos(track: Track, paths, *, source: str = "gopro", hz: float = 10,
-                 cache_dir=None) -> list[SyncResult]:
+                 cache_dir=None, gps_policy: GpsTimingPolicy = GpsTimingPolicy()) -> list[SyncResult]:
     """Match recordings, join continuous chapters, and place camera-session clips."""
     import math
     from pathlib import Path
@@ -27,6 +28,8 @@ def match_videos(track: Track, paths, *, source: str = "gopro", hz: float = 10,
     from .plugins import VIDEO_SOURCES
     from .sync import validate_track, validate_telemetry, _synchronize
 
+    if not isinstance(gps_policy, GpsTimingPolicy):
+        raise ValueError("gps_policy must be a GpsTimingPolicy")
     validate_track(track)
     if source not in VIDEO_SOURCES:
         raise ValueError(f"Unknown or unavailable video source: {source}")
@@ -59,9 +62,10 @@ def match_videos(track: Track, paths, *, source: str = "gopro", hz: float = 10,
                 raise ValueError("Duplicate recording timeline")
         except (OSError, ValueError, EOFError, zipfile.BadZipFile) as exc:
             telemetry = None
-            result = SyncResult(Failed(str(exc)), video=identity, date=track.date)
+            result = SyncResult(Failed(str(exc)), video=identity, date=track.date,
+                                gps=GpsEvaluation(policy=gps_policy))
         else:
-            result = _synchronize(track, telemetry)
+            result = _synchronize(track, telemetry, gps_policy=gps_policy)
             if result.status != "failed":
                 accepted_timelines.add(timeline)
         result.input_file = identity
@@ -69,4 +73,4 @@ def match_videos(track: Track, paths, *, source: str = "gopro", hz: float = 10,
         recordings.append(telemetry)
     from .shots import match_shots
     from .session import match_session
-    return match_session(track, recordings, match_shots(track, recordings, results))
+    return match_session(track, recordings, match_shots(track, recordings, results, gps_policy=gps_policy))

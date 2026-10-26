@@ -119,7 +119,7 @@ def match_session(track: Track, recordings: Sequence[Telemetry | None],
                     session=SessionInsufficient("no_camera_start")))
             continue
         anchor = None
-        if result.mapping is not None:
+        if result.mapping is not None and not result.gps.blocks_transfer:
             source = result.mapping.source
             if isinstance(source, CameraSession) or (result.date is None) != (origin is None):
                 continue
@@ -127,7 +127,7 @@ def match_session(track: Track, recordings: Sequence[Telemetry | None],
             anchor = Anchor(result.offset_seconds + day, result.uncertainty_seconds,
                             source.members if isinstance(source, JoinedShot) else (result.input_file,))
         blocked = result.shot_candidate.session_block if result.shot_candidate else None
-        if "step" in result.confidence.get("gps_rejected", ""):
+        if result.gps.blocks_transfer:
             blocked = SessionContradiction("gps_step", (result.input_file,))
         members.append(SessionMember(result.input_file, start, telemetry.duration, anchor, blocked))
     placements = place_session(members)

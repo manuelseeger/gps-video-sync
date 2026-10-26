@@ -151,6 +151,121 @@ class TimeMapping:
         return video_seconds * self.clock_rate + self.offset_seconds
 
 
+@dataclass(frozen=True, kw_only=True)
+class GpsTimingPolicy:
+    max_uncertainty_seconds: float = 2.
+    allow_bounded_discontinuities: bool = False
+
+    def __post_init__(self):
+        value = self.max_uncertainty_seconds
+        try:
+            valid = (not isinstance(value, bool) and isinstance(value, Real)
+                     and math.isfinite(value) and value > 0)
+        except OverflowError:
+            valid = False
+        if not valid:
+            raise ValueError("GPS maximum uncertainty must be a finite positive number of seconds")
+        if type(self.allow_bounded_discontinuities) is not bool:
+            raise ValueError("GPS bounded discontinuities option must be a boolean")
+        object.__setattr__(self, "max_uncertainty_seconds", float(value))
+
+
+@dataclass(frozen=True)
+class GpsRun:
+    start_seconds: float
+    end_seconds: float
+    center_seconds: float
+    count: int
+    max_level_residual_seconds: float
+
+
+@dataclass(frozen=True)
+class GpsEnvelope:
+    duration_seconds: float
+    start_seconds: float
+    end_seconds: float
+    whole_video_seconds: float
+    residual_max_seconds: float
+    residual_std_seconds: float
+    within_run_rate: float
+    correlated_rate_bound: float
+    rate_stderr: float
+    possible_rate_error: float
+    non_affine_excursion_seconds: float
+    runs: tuple[GpsRun, ...]
+    gaps: tuple[tuple[float, float], ...]
+
+
+@dataclass(frozen=True)
+class GpsFit:
+    mapping: TimeMapping
+    envelope: GpsEnvelope
+    measured_clock_rate: float
+    rate_stderr: float
+    drift_detected: bool
+
+
+GpsReason = Literal[
+    "not_evaluated", "no_observations", "date_unresolved", "insufficient_observations",
+    "low_inlier_fraction", "span_too_short", "invalid_observation_time",
+    "non_increasing_clock", "rate_out_of_range", "duration_unknown",
+    "observations_outside_duration", "discontinuity_not_allowed",
+    "non_affine_excursion_too_large", "rate_unconstrained", "clock_model_unbounded",
+    "rate_regime_inconsistent", "residual_scatter_too_large", "no_track_overlap",
+    "whole_video_uncertainty_exceeded", "non_finite_estimate",
+]
+
+
+@dataclass(frozen=True)
+class GpsEvaluation:
+    verdict: Literal["accepted", "rejected", "unavailable"] = "unavailable"
+    policy: GpsTimingPolicy = field(default_factory=GpsTimingPolicy)
+    reason_codes: tuple[GpsReason, ...] = ("not_evaluated",)
+    fit: GpsFit | None = None
+    origin_date: date | None = None
+    finite_count: int = 0
+    timestamp_rounding_seconds: float = 0.
+    inlier_count: int = 0
+    isolated_outlier_count: int = 0
+    support_start_seconds: float | None = None
+    support_end_seconds: float | None = None
+    window_step_detected: bool = False
+    gap_rate_mismatch_detected: bool = False
+    rate_regime_change_detected: bool = False
+
+    def __post_init__(self):
+        if self.verdict == "accepted" and (self.fit is None or self.reason_codes):
+            raise ValueError("Accepted GPS evaluation needs a bounded fit and no rejection reasons")
+        if self.verdict != "accepted" and not self.reason_codes:
+            raise ValueError("Unaccepted GPS evaluation needs a reason")
+
+    @property
+    def discontinuity_detected(self) -> bool:
+        return self.window_step_detected or self.gap_rate_mismatch_detected
+
+    @property
+    def blocks_transfer(self) -> bool:
+        return self.verdict == "rejected" and (
+            self.discontinuity_detected or any(code in self.reason_codes for code in (
+                "non_affine_excursion_too_large", "rate_regime_inconsistent",
+                "rate_unconstrained", "clock_model_unbounded")))
+
+    def to_dict(self) -> dict[str, Any]:
+        from .gps_timing import HARD_LIMITS, GPS_STEP_SECONDS
+        obj = asdict(self)
+        obj["reason_codes"] = list(self.reason_codes)
+        if self.fit:
+            obj["fit"]["envelope"]["runs"] = [asdict(run) for run in self.fit.envelope.runs]
+            obj["fit"]["envelope"]["gaps"] = [list(gap) for gap in self.fit.envelope.gaps]
+        obj["origin_date"] = self.origin_date.isoformat() if self.origin_date else None
+        obj.update(discontinuity_detected=self.discontinuity_detected,
+                   blocks_transfer=self.blocks_transfer,
+                   diagnostics_coordinates="local",
+                   hard_limits=dict(HARD_LIMITS),
+                   effective_noise_radius_seconds=GPS_STEP_SECONDS/2+self.timestamp_rounding_seconds)
+        return obj
+
+
 @dataclass(frozen=True)
 class SessionInsufficient:
     reason: Literal["no_camera_start", "too_few_anchors", "loose_bound"]
@@ -223,6 +338,8 @@ class SyncResult:
     media_offset_seconds: float | None = None
     duration: float | None = None
     shot_candidate: ShotCandidate | None = None
+    gps: GpsEvaluation = field(default_factory=GpsEvaluation)
+    motion_attempted: bool = False
 
     @property
     def status(self) -> Literal["ok", "ambiguous", "failed"]:
@@ -277,7 +394,13 @@ class SyncResult:
                 + timedelta(seconds=self.offset_seconds)).isoformat()
 
     def to_dict(self) -> dict[str, Any]:
-        obj = {k: v for k, v in asdict(self).items() if k not in {"outcome", "date", "shot_candidate"}}
+        obj = {k: v for k, v in asdict(self).items()
+               if k not in {"outcome", "date", "shot_candidate", "gps", "motion_attempted"}}
+        obj["gps"] = self.gps.to_dict()
+        if isinstance(self.mapping.source if self.mapping else None, JoinedShot):
+            obj["gps"]["diagnostics_coordinates"] = "shot"
+        obj["selection"] = dict(motion_attempted=self.motion_attempted,
+                                selected_method=self.mapping.source.kind if self.mapping else "none")
         source = self.mapping.source if self.mapping else None
         serialized_source = asdict(source) if source else None
         if isinstance(source, CameraSession):

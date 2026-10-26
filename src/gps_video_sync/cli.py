@@ -10,7 +10,7 @@ import zipfile
 
 import numpy as np
 
-from . import __version__, read_track, read_video, synchronize, match_videos
+from . import __version__, read_track, read_video, synchronize, match_videos, GpsTimingPolicy
 from .sync import validate_telemetry
 
 
@@ -76,6 +76,10 @@ def _parser():
         sub.add_argument("--cache-dir", type=Path)
         sub.add_argument("--hz", type=float, default=10, help="telemetry sample rate (default: 10)")
         if command in {"sync", "verify"}:
+            sub.add_argument("--gps-max-uncertainty-seconds", type=float, default=None,
+                             help="maximum estimated GPS error over the whole video, in seconds (default: 2)")
+            sub.add_argument("--gps-allow-bounded-discontinuities", action="store_true", default=None,
+                             help="permit detected GPS discontinuities only within all timing safety limits")
             sub.add_argument("--track", required=True, type=Path)
             sub.add_argument("--track-format", default="igc")
             sub.add_argument("--altitude", choices=("auto", "gps", "pressure"), default="auto")
@@ -107,6 +111,14 @@ def main(argv=None):
                                       gps_samples=len(telemetry.gps_time)),
                                  indent=2, default=_json_default, allow_nan=False))
             return 0
+        if (args.command == "verify" and args.result
+                and (args.gps_max_uncertainty_seconds is not None
+                     or args.gps_allow_bounded_discontinuities is not None)):
+            raise ValueError("GPS policy options cannot be used with verify --result")
+        policy = GpsTimingPolicy(
+            max_uncertainty_seconds=(2. if args.gps_max_uncertainty_seconds is None
+                                     else args.gps_max_uncertainty_seconds),
+            allow_bounded_discontinuities=bool(args.gps_allow_bounded_discontinuities))
         try:
             track = read_track(args.track, format=args.track_format, altitude=args.altitude)
         except KeyError as exc:
@@ -115,7 +127,8 @@ def main(argv=None):
             raise
         if args.command == "sync":
             results = [r.to_dict() for r in match_videos(
-                track, args.videos, source=args.source, hz=args.hz, cache_dir=args.cache_dir)]
+                track, args.videos, source=args.source, hz=args.hz, cache_dir=args.cache_dir,
+                gps_policy=policy)]
             document = dict(schema_version="3.0.0", videos=results)
             if args.json:
                 write_json(args.json, document)
@@ -125,7 +138,7 @@ def main(argv=None):
             from .verify import plot_verification, select_result
             telemetry = _telemetry(args)
             result = (select_result(json.loads(args.result.read_text()), telemetry)
-                      if args.result else synchronize(track, telemetry).to_dict())
+                      if args.result else synchronize(track, telemetry, gps_policy=policy).to_dict())
             results = [result]
             if result["status"] == "ok":
                 plot_verification(track, telemetry, result, args.output, args.frames or [])

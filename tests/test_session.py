@@ -166,7 +166,7 @@ def test_unapproved_continuity_mapping_blocks_session_rescue(track, tmp_path):
     assert results[1].offset_seconds == pytest.approx(130.3)
     assert results[2].offset_seconds is None
     assert results[2].to_dict()["session"]["verdict"] == "contradictory"
-    assert results[2].message == "Insufficient varying, overlapping motion (minimum 90 s). Continuity candidate has no approved common mapping"
+    assert results[2].message == "Insufficient varying, overlapping motion (minimum 90 s). A GPS UTC step blocks session placement"
     assert results[2].shot["status"] == "ambiguous"
 
 

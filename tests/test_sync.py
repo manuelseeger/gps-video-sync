@@ -89,7 +89,7 @@ def test_straight_glide_rejected():
 def test_gps_primary_and_date():
     track = Track(np.arange(100.)+30000, np.ones(100), np.ones(100), np.ones(100), date(2026, 1, 1))
     gt = np.arange(20.)
-    telem = Telemetry(gt, {}, gps_time=gt, gps_utc=1767225600+30010+gt)
+    telem = Telemetry(gt, {}, duration=20., gps_time=gt, gps_utc=1767225600+30010+gt)
     result = synchronize(track, telem)
     assert result.method == "gps"
     assert result.offset_seconds == 30010
@@ -115,7 +115,7 @@ def test_gps_drift_uses_fitted_residual(rate):
     track = Track(np.array([30000., 38000.]), np.array([45., 46.]), np.array([11., 12.]),
                   np.array([100., 200.]), date(2026, 1, 1))
     epoch = datetime(2026, 1, 1, tzinfo=timezone.utc).timestamp()
-    telemetry = Telemetry(t, {}, gps_time=t, gps_utc=epoch+30010+t*rate)
+    telemetry = Telemetry(t, {}, duration=7200., gps_time=t, gps_utc=epoch+30010+t*rate)
     result = synchronize(track, telemetry)
     assert result.status == "ok"
     assert result.method == "gps"
@@ -135,7 +135,7 @@ def test_gps_establishes_missing_date_and_rejects_split_clock():
     t = np.arange(100.)
     epoch = datetime(2026, 1, 1, tzinfo=timezone.utc).timestamp()
     track = Track(np.array([30000., 31000.]), np.array([45., 46.]), np.array([11., 12.]), np.array([100., 200.]))
-    telemetry = Telemetry(t, {}, gps_time=t, gps_utc=epoch+30010+t)
+    telemetry = Telemetry(t, {}, duration=100., gps_time=t, gps_utc=epoch+30010+t)
     result = synchronize(track, telemetry)
     assert result.method == "gps" and result.date == date(2026, 1, 1)
     telemetry.gps_utc[:60] += 30
@@ -158,7 +158,7 @@ def test_correlated_turn_proxies_are_one_agreement_group():
 def _gps_case(gps_time, gps_utc):
     track = Track(np.arange(30000., 45000.), np.ones(15000), np.ones(15000), np.ones(15000), date(2026, 1, 1))
     time = np.arange(0., max(2., float(np.max(gps_time)) + 1), .1)
-    return synchronize(track, Telemetry(time, {}, gps_time=np.asarray(gps_time, float),
+    return synchronize(track, Telemetry(time, {}, duration=float(time[-1]+.1), gps_time=np.asarray(gps_time, float),
                                         gps_utc=1767225600 + np.asarray(gps_utc, float)))
 
 
@@ -326,8 +326,12 @@ def test_plateau_under_alternating_jitter_is_rejected():
 def test_gps_after_early_gap_keeps_early_observations():
     t = np.r_[[0., .1, .2], 30 + np.arange(57)*.1]
     result = _gps_case(t, 30010 + t + .049*np.cos(np.linspace(0, np.pi, 60)))
-    assert result.method == "gps"
-    assert abs(result.offset_seconds - 30010) <= result.uncertainty_seconds
+    assert result.gps.inlier_count == 60
+    assert not result.gps.discontinuity_detected
+    assert result.gps.verdict == "rejected"
+    assert "whole_video_uncertainty_exceeded" in result.gps.reason_codes
+    assert result.gps.fit.envelope.runs[0].count == 3
+    assert result.offset_seconds is None
 
 
 def test_step_at_gps_gap_is_rejected_or_covered():

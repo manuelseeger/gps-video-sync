@@ -104,7 +104,8 @@ def test_missing_middle_and_unrelated_inputs_do_not_change_peers(chapters, tmp_p
     track, _, paths = chapters
     unrelated = tmp_path / "unrelated.npz"
     t = np.arange(120.)
-    np.savez(unrelated, time=t, gps_time=t, gps_utc=EPOCH + 2000. + t)
+    np.savez(unrelated, time=t, gps_time=t, gps_utc=EPOCH + 2000. + t,
+             recording=json.dumps(dict(video="unrelated.mp4", duration=120., media_offset_seconds=0.)))
     solo = match_videos(track, [unrelated], source="npz")[0]
     joined = match_videos(track, [paths[2], unrelated, paths[0], paths[1]], source="npz")
     assert joined[1].to_dict() == solo.to_dict()
@@ -160,10 +161,10 @@ def test_shot_programming_errors_propagate(chapters, monkeypatch, error):
     from gps_video_sync import sync
     track, _, paths = chapters
     original = sync._synchronize
-    def broken(track, telemetry):
+    def broken(track, telemetry, **kwargs):
         if telemetry.video is None:
             raise error("shot defect")
-        return original(track, telemetry)
+        return original(track, telemetry, **kwargs)
     monkeypatch.setattr(sync, "_synchronize", broken)
     with pytest.raises(error, match="shot defect"):
         match_videos(track, paths, source="npz")
@@ -174,12 +175,12 @@ def test_projection_veto_checks_both_ends(chapters, monkeypatch):
     track, _, paths = chapters
     baseline = match_videos(track, paths[:1], source="npz")[0]
     original = sync._synchronize
-    def conflicting(track, telemetry):
+    def conflicting(track, telemetry, **kwargs):
         if telemetry.video is None:
             from gps_video_sync.models import Accepted
             return replace(baseline, outcome=Accepted(replace(baseline.mapping, clock_rate=1.004)),
                            drift={"clock_rate": 1.004}, video=None, duration=telemetry.duration)
-        return original(track, telemetry)
+        return original(track, telemetry, **kwargs)
     monkeypatch.setattr(sync, "_synchronize", conflicting)
     actual = match_videos(track, paths, source="npz")
     assert actual[0].offset_seconds == baseline.offset_seconds

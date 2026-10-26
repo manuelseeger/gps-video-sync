@@ -7,7 +7,7 @@ from typing import Literal, Sequence
 import numpy as np
 
 from .models import (SyncResult, Telemetry, Track, Accepted, JoinedShot, ShotCandidate,
-                     SessionContradiction)
+                     SessionContradiction, GpsTimingPolicy)
 
 JOIN_SECONDS = .05
 
@@ -104,10 +104,6 @@ def project(result: SyncResult, members: Sequence[Telemetry]) -> list[SyncResult
     return projected
 
 
-def _gps_step(result: SyncResult) -> bool:
-    return "step" in result.confidence.get("gps_rejected", "")
-
-
 def _contradiction(baseline: SyncResult, projected: SyncResult) -> bool:
     if baseline.status != "ok":
         return False
@@ -120,7 +116,8 @@ def _contradiction(baseline: SyncResult, projected: SyncResult) -> bool:
 
 
 def match_shots(track: Track, recordings: Sequence[Telemetry | None],
-                baseline: list[SyncResult]) -> list[SyncResult]:
+                baseline: list[SyncResult], *,
+                gps_policy: GpsTimingPolicy = GpsTimingPolicy()) -> list[SyncResult]:
     from .sync import _synchronize
 
     results = list(baseline)
@@ -140,15 +137,17 @@ def match_shots(track: Track, recordings: Sequence[Telemetry | None],
         elif shot.status == "joined":
             if any(baseline[i].status == "failed" for i in shot.members):
                 reason = "A member failed independent synchronization"
-            elif any(_gps_step(baseline[i]) for i in shot.members):
+            elif any(baseline[i].gps.blocks_transfer for i in shot.members):
                 reason = "A GPS UTC step blocks shot synchronization"
                 block = SessionContradiction("gps_step", identities)
             else:
-                solved = _synchronize(track, concatenate(members))
-                if solved.status != "ok":
+                solved = _synchronize(track, concatenate(members), gps_policy=gps_policy)
+                if solved.gps.blocks_transfer:
+                    reason = ("Grouping introduced a GPS UTC step" if solved.gps.discontinuity_detected
+                              else "Grouping introduced unsafe GPS timing")
+                    block = SessionContradiction("gps_step", identities)
+                elif solved.status != "ok":
                     reason = "Shot synchronization was not accepted: " + solved.message
-                elif _gps_step(solved) and not any(_gps_step(baseline[i]) for i in shot.members):
-                    reason = "Grouping introduced a GPS UTC step"
                 else:
                     projected = project(solved, members)
                     if any(_contradiction(baseline[i], p) for i, p in zip(shot.members, projected)):

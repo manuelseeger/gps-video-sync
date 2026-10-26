@@ -19,7 +19,7 @@ def recordings(tmp_path):
     paths = []
     for name, offset in (("first", 100), ("gap", 600), ("overlap", 150)):
         path = tmp_path / f"{name}.npz"
-        np.savez(path, time=time, gps_time=time, gps_utc=epoch + offset + time)
+        _export(Telemetry(time, {}, str(path), 120., time, epoch + offset + time), path)
         paths.append(path)
     return track, paths
 
@@ -263,7 +263,7 @@ def test_failed_outcome_does_not_reserve_timeline(local_timelines, tmp_path):
 def test_matcher_errors_propagate(recordings, monkeypatch, error):
     from gps_video_sync import sync
     track, paths = recordings
-    def broken(*args):
+    def broken(*args, **kwargs):
         raise error
     monkeypatch.setattr(sync, "_synchronize", broken)
     with pytest.raises(type(error), match="matcher defect"):
