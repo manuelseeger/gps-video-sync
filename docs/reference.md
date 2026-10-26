@@ -228,8 +228,8 @@ A survey folder with no positive filename hints returns code 2.
 `read_video(path, *, source="gopro", hz=10, cache_dir=None)` reads one recording
 and returns a `Telemetry`. A value that is not one `str` or `Path`, for example
 a list of paths, raises `ValueError`.
-`synchronize(track, telemetry)` returns one `SyncResult`.
-`match_videos(track, paths, *, source="gopro", hz=10, cache_dir=None)` returns a
+`synchronize(track, telemetry, *, gps_policy=GpsTimingPolicy())` returns one `SyncResult`.
+`match_videos(track, paths, *, source="gopro", hz=10, cache_dir=None, gps_policy=GpsTimingPolicy())` returns a
 list of file-local `SyncResult` values in input order.
 
 - `Track(time, latitude, longitude, altitude, date=None, altitude_source="gps")`
@@ -312,11 +312,12 @@ and counters can satisfy these checks. Check the verification plots before use.
 
 A continuous shot concatenates local telemetry on cumulative file durations
 and runs the existing single-recording matcher. A failed independent member
-cannot be promoted. An independent GPS UTC step also prevents a shared shot
-mapping. Chapter creation times must agree within 1 second. A larger difference
+cannot be promoted. An independent rejected GPS evaluation with `blocks_transfer`
+also prevents a shared shot mapping. Chapter creation times must agree within 1 second. A larger difference
 is a contradiction. A group result that is not `ok` retains all independent
-results. A GPS step reported on the shot but on no independent member also
-retains them, even when the shot has an accepted motion fit. The projected
+results. Unsafe GPS timing reported on the shot also retains them, even when
+the shot has an accepted motion fit. The same `gps_policy` evaluates individual
+recordings and the whole shot. The projected
 mapping must agree with every independent `ok` mapping at both ends of that
 member, within the sum of the two uncertainty bounds. A contradiction retains
 all independent results. Unexpected matcher errors propagate.
@@ -336,7 +337,7 @@ also has `members` in chronological order, `index`, `start_seconds` on the
 candidate shot timeline, and `reason`. Branch metadata names the whole candidate
 group in sensor-clock and recording-identity order.
 Joined results label `shot.diagnostics_coordinates` as `shot`. Their
-`confidence`, `per_feature`, and `drift` diagnostics, including candidate
+`gps`, `confidence`, `per_feature`, and `drift` diagnostics, including candidate
 offsets, window midpoints, and drift intercepts, refer to the shot timeline.
 The top-level offset and the identity fields remain file-local.
 
@@ -381,7 +382,9 @@ Session mappings use media clock rate 1. Camera-clock drift does not set the
 media rate.
 
 Placement keeps accepted results and failed results unchanged. Joined chapters
-keep their projected offsets and rates. A GPS UTC step blocks promotion. An
+keep their projected offsets and rates. Rejected unsafe GPS timing blocks both
+promotion and use as a session anchor, including after a successful motion
+fallback. An accepted bounded GPS discontinuity can be an anchor. An
 unapproved continuity candidate cannot promote other members when it retains
 an accepted member or contains a failed member. Branches and conflicting
 serials also block placement. Chapter creation times that differ by more than
@@ -724,73 +727,221 @@ GPS steps. The script needs the `verify` extra and `ffmpeg`.
 ## Matching limits
 
 Camera GPS UTC is the primary reference when usable. Motion matching is the
-fallback when GPS time is absent or not usable. GPS time is usable when all of
-these conditions are true:
+fallback when GPS time is absent or rejected. A rejected GPS candidate is never
+the selected mapping. Motion fallback can also fail to establish an alignment.
 
-- A track date exists, or the camera GPS establishes one.
-- At least three finite observations exist, and at least 80% are inliers of a
-  robust line fit. The line connects the medians of the first and last thirds
-  of the GPS time span, or of the observations when a time third has fewer than
-  three observations.
-- The inliers span at least 10 seconds of video time.
-- Video time strictly increases across the inliers. GPS UTC increases from the
-  first to the last inlier and never decreases by more than 0.1 seconds.
-- The fitted clock rate differs from 1 by at most 0.002, plus three standard
-  errors of the fitted rate, plus 0.2 seconds divided by the GPS span.
-  A rate difference of 0.002 is 7.2 seconds per hour. The last term allows for
-  slow wander of up to 0.1 seconds over a short span. 0.002 is more than ten
-  times the usual tolerance of camera clock crystals. Larger rates come from
-  frozen, stepped, or wrong UTC values.
-- The residual standard deviation is less than 0.5 seconds.
-- No UTC step occurs. The check uses all finite observations, before outlier
-  removal. It removes the rate between the medians of the first and last thirds
-  of the observations. For window sizes of 3, 5, 10, 20, and 30 observations,
-  up to half the observations, and at each position, it compares the median of
-  the preceding window with the median of the following window. Near the start
-  and end, a window shrinks to the available observations, down to one. The
-  check first reduces the difference by the possible detrending rate error
-  times the time from the first to the last observation of the two windows.
-  The rate error is 0.1 seconds, plus the rate times the time ranges of both
-  thirds, divided by the distance between the third medians. A reduced
-  difference of more than 0.1 seconds, and of more than six standard errors of
-  the white noise between adjacent observations, is a step. The standard-error
-  term is at most 0.15 seconds. Noise within ±0.05 seconds cannot cause a step.
-  A single outlier inside the interval is not a step. A deviating first or last
-  observation is a step.
-- The GPS interval overlaps the track.
-- The estimated uncertainty is at most 2 seconds over the whole video timeline.
+### GPS timing policy
 
-Synchronization ignores GPS UTC values outside the years 1970 to 9998. It uses
-the fitted clock rate when the rate is significant and changes the mapping by
-more than 0.5 seconds over the combined interval of the video timeline and the
-GPS observations. Otherwise `clockRate` is 1 and the offset is the median at
-the GPS observations.
+`GpsTimingPolicy` is frozen and keyword-only. Its options are:
 
-A gap in the GPS observations is longer than 2 seconds and five median sample
-intervals. Gaps divide the observations into runs. The within-run rate is the
-least-squares rate with a separate offset for each run, so a step at a gap does
-not change it. Its bound is the largest rate error that noise within ±0.05
-seconds can cause. When the overall fitted rate differs from the within-run
-rate by more than both bounds and three combined standard errors, the GPS UTC
-has a step at a gap.
+| Option | Default | Meaning |
+| --- | --- | --- |
+| `max_uncertainty_seconds` | `2.0` | Maximum estimated error over the entire interval `[0, duration]`, in seconds. |
+| `allow_bounded_discontinuities` | `False` | Permit detected discontinuities only when all hard checks and the budget pass. |
 
-The uncertainty is 0.1 seconds at the center of the GPS observations, plus the
-possible rate error times the distance to the farther video end. The possible
-rate error is the difference between the used rate and the within-run rate,
-plus the within-run bound and three standard errors. The uncertainty also
-covers the clock of each run. The clock of a run uses the median offset of the
-run at the within-run rate. At both video ends, the uncertainty covers the
-difference from that clock, plus 0.1 seconds, plus the within-run bound and
-three standard errors times the distance to the center of the run. The reported
-uncertainty is at least 0.5 seconds and at least three residual standard
-deviations. A short GPS interval far from the video start or short runs between
-gaps increase the uncertainty. A step at a gap that the runs cannot separate
-from a rate change also increases it. This uncertainty can prevent a GPS
-result.
+The budget must be a finite positive real number. Booleans are invalid budgets.
+The discontinuity option must be a boolean. Invalid policies raise `ValueError`.
+Budgets below 0.5 seconds and above 2 seconds are valid. The uncertainty floor
+is 0.5 seconds, so a smaller budget rejects GPS. A larger budget does not relax
+the fixed quality, rate, excursion, or duration checks.
 
-When GPS time is present but not usable, `confidence.gps_rejected` gives the
-reason. A motion result that is not accepted also states that reason in
-`message`.
+`synchronize` and `match_videos` accept `gps_policy`. The exact
+policy also evaluates a concatenated shot. CLI `sync` and fresh `verify` accept
+`--gps-max-uncertainty-seconds` and
+`--gps-allow-bounded-discontinuities`. Explicit policy options with
+`verify --result` are input errors. Saved-result verification uses the saved
+mapping and diagnostics without a new GPS decision.
+
+### GPS evaluation and hard checks
+
+Every `SyncResult.gps` is a frozen `GpsEvaluation`. Its `verdict` is
+`accepted`, `rejected`, or `unavailable`. `reason_codes` is empty only for
+acceptance. `fit` is a bounded diagnostic candidate or `None` when no finite
+whole-video estimate exists. Only an accepted evaluation supplies the GPS
+outcome mapping.
+
+The fixed checks require:
+
+- At least three finite supported observations and at least 80 percent fit
+  inliers. The robust seed connects medians of the first and last time thirds,
+  or observation thirds when a time third has fewer than three samples.
+  Inliers have seed residuals within the larger of 0.5 seconds and six median
+  absolute residuals.
+- At least 10 seconds of inlier support.
+- Strictly increasing video times. Inlier UTC must increase overall and cannot
+  decrease between adjacent inliers by more than 0.1 seconds.
+- A fitted rate within `0.002 + 3*stderr + 0.2/span` of one.
+- Known actual recording duration. Finite observations must lie in
+  `[0, duration)`. The last motion sample does not replace duration.
+- Safety residual standard deviation below 0.5 seconds and track overlap.
+- Finite, identifiable within-run rate evidence.
+- Non-affine excursion, including the 0.1-second noise margin, at most
+  0.5 seconds.
+- No incompatible local rate regimes supported by fixed-noise local fits.
+- Whole-video uncertainty within the selected budget.
+
+Unsupported Unix UTC values outside years 1970 to 9998 are ignored.
+The selected mapping uses the fitted rate only when its difference from one
+exceeds three standard errors and accumulates more than 0.5 seconds over the
+actual duration. Otherwise the returned rate is one and the offset is the
+median UTC minus video time. All residual metrics describe this returned
+mapping, including unselected drift.
+
+Detection is independent of policy. `window_step_detected` uses all finite
+pre-clipping observations. It detrends with the rate between the first and
+last observation-third medians. Windows of 3, 5, 10, 20, and 30 samples compare
+adjacent medians, with shorter windows at endpoints. A difference must exceed
+0.1 seconds after the detrending-error allowance and the white-noise allowance.
+The latter is capped at 0.15 seconds. Isolated interior spikes do not normally
+trigger detection. Endpoint deviations remain visible.
+
+A gap exceeds both 2 seconds and five median sample intervals. Each run has a
+separate level. `gap_rate_mismatch_detected` compares the global rate with
+the within-run rate using the original fixed-noise bounds and three combined
+standard errors. Neither detector reads the policy.
+`discontinuity_detected` is the OR of these two flags.
+
+`rate_regime_change_detected` is a separate hard check. Local window widths
+start at each run's full span and halve down to a final width of 10 seconds.
+Each width uses half-width strides and windows anchored at both run endpoints.
+Scales too short to contain six samples are skipped. Window bounds use binary
+search in the ordered run, without a full-data mask for each window.
+
+A local fit needs at least six samples and 10 seconds of observed span.
+The timestamp allowance `R` is the maximum absolute float spacing of finite,
+supported raw `gps_utc`, plus the maximum absolute float spacing of the
+corresponding raw `gps_time`, plus a `1e-8`-second numerical floor. The
+calculation precedes UTC origin subtraction. It uses no policy value.
+The effective noise radius is `N = 0.05 + R` seconds.
+A window supplies rate evidence when an affine line fits every observation
+within ±`N` seconds. An ordinary least-squares residual range at most
+`2*N` establishes feasibility. Otherwise, a centered and scaled
+linear feasibility problem with two variables checks the window. It starts
+with endpoint and extreme-value constraints, adds violated constraints, and
+checks each candidate line against every original observation within `N`.
+The LP reserves the `1e-8`-second floor by using radius `N - 1e-8` in its
+constraints, so numerical error in a boundary solution fits within `N`.
+A solver failure or an unverifiable candidate rejects GPS with
+`clock_model_unbounded`.
+
+Infeasible windows, including windows across offset steps, supply no rate
+evidence. Rates in disjoint eligible windows must agree within their fixed
+bounded-error intervals. For centered times `z_i`, each interval is centered
+on the ordinary least-squares rate and has radius
+`N * sum(abs(z_i)) / sum(z_i**2)`.
+Every affine rate that fits the window within the noise allowance lies in
+this interval. The intervals do not expand with pooled residuals or permitted
+offset steps. Short endpoint regimes supply evidence when their span and
+rate difference exceed these bounds. Sparse evidence does not establish a
+rate change.
+
+Safety observations exclude only clipped, isolated interior points whose
+immediate neighbors are inliers and agree after detrending within 0.1 seconds.
+Neither adjacent points nor endpoints nor points next to gaps qualify.
+Sustained deviations remain in the envelope even if the robust fit trims them.
+
+### Conditional whole-video envelope
+
+Let `M(t) = a + b*t` be the selected mapping, `b_w` the within-run rate,
+and `s_w` its standard error. UTC arithmetic uses a common subtracted origin.
+For each safety run `j`, with mean video time `c_j`:
+
+```text
+z_i = t_i - c_j
+L_j = median(u_i - b_w*t_i)
+A_j = max(abs(u_i - L_j - b_w*t_i))
+W = sum_j sum_i z_i**2
+B = sum_j ((N + A_j) * sum_i abs(z_i)) / W
+E = abs(b - b_w) + B + 3*s_w
+V_j(t) = abs(M(t) - L_j - b_w*t) + 2*N + A_j + E*abs(t-c_j)
+H = range(u_i - b_w*t_i) + 2*N
+```
+
+`W <= 0` is unconstrained. `H > 0.5` rejects the model independently of
+the caller budget. Each endpoint error is `max_j V_j(t)`, evaluated at
+`t=0` and at the actual duration. The whole-video estimate is the maximum
+of both endpoint errors, 0.5 seconds, the maximum absolute safety residual,
+and three safety residual standard deviations. Convex affine endpoint
+envelopes cover gap interiors under the common-rate assumption. Gaps supply
+no cross-gap rate evidence and receive no extra interpolated rate evidence.
+
+The envelope uses the same `N` as the local-rate check. Its level-difference
+margins use `2*N`, including twice the timestamp allowance. Strict step and
+gap detectors retain their fixed thresholds and bounds.
+`B` includes observed run residual radius as a bounded-error allowance.
+It does not shrink like independent measurement noise merely because
+correlated observations become denser. Late GPS lock, unsampled tails, and
+short runs can increase the envelope beyond the budget.
+
+This is a conditional timing-consistency estimate. It assumes a common rate
+and bounded residual error between observations. It does not establish
+physical UTC accuracy. Constant GPS bias, shared reconstruction bias, and
+hidden corrections that reverse inside unsampled intervals are not excluded.
+The observations alone do not identify a clock correction versus timestamp
+reconstruction error. The 0.5-second excursion ceiling is a conservative
+safety limit, not a calibrated physical accuracy claim.
+
+### Structured diagnostics and fallback
+
+Result schema `3.0.0` includes `gps` and `selection` objects.
+`gps.policy` gives the effective policy. `gps.hard_limits` gives fixed
+limits. `gps.timestamp_rounding_seconds` exposes `R`, including its numerical
+floor. `gps.effective_noise_radius_seconds` exposes `N`.
+Counts distinguish finite observations, fit inliers, and isolated
+safety exclusions. Support times and `fit.envelope.runs` and `gaps` use
+local video seconds, or whole-shot seconds when
+`gps.diagnostics_coordinates == "shot"`. Each gap contains its start and end times.
+Joined members retain the whole-shot envelope and conservative uncertainty;
+`shot.start_seconds` locates the member in that coordinate system.
+
+`fit.envelope` exposes `start_seconds` and `end_seconds` as endpoint
+error bounds, not observation times. It also exposes `whole_video_seconds`,
+`residual_max_seconds`, `residual_std_seconds`, `within_run_rate`,
+`correlated_rate_bound`, `rate_stderr`, `possible_rate_error`, and
+`non_affine_excursion_seconds`. Unknown estimates are null, never NaN or
+infinity.
+
+Rejection codes include `insufficient_observations`, `low_inlier_fraction`,
+`span_too_short`, `invalid_observation_time`, `non_increasing_clock`,
+`rate_out_of_range`, `duration_unknown`, `observations_outside_duration`,
+`discontinuity_not_allowed`, `non_affine_excursion_too_large`,
+`rate_unconstrained`, `clock_model_unbounded`, `rate_regime_inconsistent`,
+`residual_scatter_too_large`, `no_track_overlap`,
+`whole_video_uncertainty_exceeded`, and `non_finite_estimate`.
+Unavailable codes are `no_observations`, `date_unresolved`, and
+`not_evaluated`. Analysis collects all computable checks, so strict step
+rejection can still expose the candidate uncertainty.
+
+`gps.blocks_transfer` centrally blocks shot or session transfer for rejected
+detector hits, excessive excursion, inconsistent rates, or an unconstrained
+clock. Accepted bounded discontinuities do not block transfer.
+`confidence.gps_rejected` remains a human summary. Production decisions do
+not parse it.
+
+`selection.motion_attempted` records fallback attempts.
+`selection.selected_method` derives from the final mapping source and is
+`gps`, `motion`, `shot`, `session`, or `none`. Failed or ambiguous
+fallbacks select `none`.
+
+### Timing-consistency analysis tool
+
+`scripts/check_gps_timing.py` accepts `--video`, `--timing-npz`, or both,
+optional `--cache-dir`, `--duration-seconds`, and
+`--max-uncertainty-seconds` with default 1 second. A timing-only NPZ contains
+`time`, `gps_time`, `gps_utc`, and optional scalar `duration`.
+Exported telemetry NPZ is also supported.
+
+```sh
+uv run python scripts/check_gps_timing.py --video recording.MP4
+uv run python scripts/check_gps_timing.py --timing-npz timing.npz --max-uncertainty-seconds 1
+```
+
+The tool exercises the public synchronizer against a synthetic overlapping
+track derived from observation dates. It compares strict and bounded policies
+at the same budget. Output contains relative video times and error metrics,
+not paths, serials, dates, or absolute UTC. It is timing-consistency analysis,
+not flight ground truth or motion validation. Exit code 1 means an input or
+analysis error. A structured GPS rejection is a successful analysis.
 
 The motion matcher filters each valid run separately. It searches with masked,
 normalized FFT correlations, then refines the offset locally in 0.1-second
